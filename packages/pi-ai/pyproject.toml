@@ -8,7 +8,9 @@ requires-python = ">=3.11"
 authors = [{ name = "Justin Gao" }]
 dependencies = [
     "pydantic>=2.7",
-    # provider SDK 与 httpx 等留待阶段 1 实现时按需补充
+    "openai>=1.50",
+    "anthropic>=0.39",
+    "json-repair>=0.30",
 ]
 
 [build-system]
