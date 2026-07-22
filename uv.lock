@@ -11,9 +11,9 @@ members = [
     "pi-agent-core",
     "pi-ai",
     "pi-coding-agent",
+    "pi-py",
     "pi-server",
     "pi-storage-sqlite",
-    "py-mono",
 ]
 
 [[package]]
@@ -649,6 +649,49 @@ requires-dist = [
 ]
 
 [[package]]
+name = "pi-py"
+version = "0.0.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "pi-agent-core" },
+    { name = "pi-ai" },
+    { name = "pi-coding-agent" },
+    { name = "pi-server" },
+    { name = "pi-storage-sqlite" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "mypy" },
+    { name = "pre-commit" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+    { name = "types-pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pi-agent-core", editable = "packages/pi-agent-core" },
+    { name = "pi-ai", editable = "packages/pi-ai" },
+    { name = "pi-coding-agent", editable = "packages/pi-coding-agent" },
+    { name = "pi-server", editable = "packages/pi-server" },
+    { name = "pi-storage-sqlite", editable = "packages/pi-storage-sqlite" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mypy", specifier = ">=1.11" },
+    { name = "pre-commit", specifier = ">=3.8" },
+    { name = "pytest", specifier = ">=8" },
+    { name = "pytest-asyncio", specifier = ">=0.24" },
+    { name = "pytest-cov", specifier = ">=5" },
+    { name = "ruff", specifier = ">=0.6" },
+    { name = "types-pyyaml", specifier = ">=6" },
+]
+
+[[package]]
 name = "pi-server"
 version = "0.81.1"
 source = { editable = "packages/pi-server" }
@@ -706,49 +749,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/25/3a/ddb78f32a0814e66b18a099377a106a2dcdce92d86a034d69d65df9b256e/pre_commit-4.6.1.tar.gz", hash = "sha256:03e809865c7d178b9979d06c761fcbfe6808fdaded8581a745bb110e52050421", size = 198646, upload-time = "2026-07-21T20:56:58.225Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fb/49/bc925106abcdac498074f2cbe6137e94e09f418dd2b7775df5b577dc0313/pre_commit-4.6.1-py2.py3-none-any.whl", hash = "sha256:0e3b2942510d1fb34eec167a3ec57331bf8442122f1153a9fb8b58f5c49b2717", size = 226186, upload-time = "2026-07-21T20:56:57.064Z" },
-]
-
-[[package]]
-name = "py-mono"
-version = "0.0.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "pi-agent-core" },
-    { name = "pi-ai" },
-    { name = "pi-coding-agent" },
-    { name = "pi-server" },
-    { name = "pi-storage-sqlite" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "mypy" },
-    { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-    { name = "types-pyyaml" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "pi-agent-core", editable = "packages/pi-agent-core" },
-    { name = "pi-ai", editable = "packages/pi-ai" },
-    { name = "pi-coding-agent", editable = "packages/pi-coding-agent" },
-    { name = "pi-server", editable = "packages/pi-server" },
-    { name = "pi-storage-sqlite", editable = "packages/pi-storage-sqlite" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "mypy", specifier = ">=1.11" },
-    { name = "pre-commit", specifier = ">=3.8" },
-    { name = "pytest", specifier = ">=8" },
-    { name = "pytest-asyncio", specifier = ">=0.24" },
-    { name = "pytest-cov", specifier = ">=5" },
-    { name = "ruff", specifier = ">=0.6" },
-    { name = "types-pyyaml", specifier = ">=6" },
 ]
 
 [[package]]

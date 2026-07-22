@@ -1,5 +1,5 @@
 [project]
-name = "py-mono"
+name = "pi-py"
 version = "0.0.0"
 description = "Python port of earendil-works/pi — AI agent toolkit (unified LLM API, agent runtime, coding agent SDK)"
 readme = "README.md"
