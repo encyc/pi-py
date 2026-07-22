@@ -14,7 +14,8 @@
 | stream/stream_simple/complete 入口 | ✅ | `stream.ts` |
 | providers/faux（测试 mock） | ✅ | `providers/faux.ts` |
 | providers/openai（Chat Completions） | ✅ | `api/openai-completions.ts` |
-| providers/anthropic | 🟡 下一轮 | `api/anthropic-messages.ts` |
+| providers/anthropic（含 thinking 支持） | ✅ | `api/anthropic-messages.ts` |
+| retry（重试工具） | ✅ | `utils/retry.ts` |
 | providers/google / mistral / bedrock | 🟡 后续 | `api/*.ts` |
 | auth（OAuth） | 🟡 后续 | `auth/*` |
 | images（图像生成） | 🟡 后续 | `images*.ts` |
@@ -48,6 +49,7 @@
 
 ## 待办（下一轮）
 
-- [ ] Anthropic provider（含 thinking 支持）
-- [ ] retry 工具（``retry_assistant_call`` + 可重试错误正则）
+- [x] Anthropic provider（含 thinking 支持）
+- [x] retry 工具（``retry_assistant_call`` + 可重试错误正则）
 - [ ] 更多 provider（google / mistral / bedrock）
+- [ ] OAuth 鉴权（``auth/*``）

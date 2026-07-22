@@ -67,6 +67,9 @@ from .models import (
     register_model,
 )
 
+# ---- 重试 ----
+from .retry import RetryCallbacks, RetryPolicy, is_retryable_assistant_error, retry_assistant_call
+
 # ---- 流式入口 ----
 from .stream import complete, complete_simple, stream, stream_simple
 from .types import (
@@ -177,6 +180,11 @@ __all__ = [
     "register_api_provider",
     "register_builtins",
     "register_model",
+    # 重试
+    "RetryCallbacks",
+    "RetryPolicy",
+    "is_retryable_assistant_error",
+    "retry_assistant_call",
     # 流式入口
     "complete",
     "complete_simple",

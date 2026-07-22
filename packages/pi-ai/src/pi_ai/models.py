@@ -123,6 +123,13 @@ def register_builtins() -> None:
     for m in OPENAI_MODELS:
         register_model(m)
 
+    # Anthropic provider
+    from .providers.anthropic_provider import ANTHROPIC_MODELS, anthropic_api_provider
+
+    register_api_provider("anthropic-messages", anthropic_api_provider)
+    for m in ANTHROPIC_MODELS:
+        register_model(m)
+
     # Faux（测试用 mock provider）
     from .providers.faux import FAUX_MODEL, faux_api_provider
 
