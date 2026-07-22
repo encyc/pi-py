@@ -16,14 +16,12 @@ _load_path = Path(__file__).resolve().parents[3] / ".env"
 if _load_path.exists():
     load_dotenv(_load_path)
 
-from pi_ai import AssistantMessage, Model, ModelCost, TextContent, UserMessage  # noqa: E402
-
 from pi_agent_core import (  # noqa: E402
     CompactionSettings,
     compact,
-    estimate_context_tokens,
     generate_summary,
 )
+from pi_ai import AssistantMessage, Model, ModelCost, TextContent, UserMessage  # noqa: E402
 
 pytestmark = pytest.mark.integration
 
@@ -46,9 +44,7 @@ def _deepseek_model() -> Model:
 
 
 def _assistant(text: str) -> AssistantMessage:
-    return AssistantMessage(
-        content=[TextContent(text=text)], api="x", provider="x", model="x"
-    )
+    return AssistantMessage(content=[TextContent(text=text)], api="x", provider="x", model="x")
 
 
 @pytest.mark.skipif(not DEEPSEEK_AVAILABLE, reason="未设置 DEEPSEEK_API_KEY")
@@ -67,11 +63,12 @@ async def test_generate_summary_real():
     summary = await generate_summary(model, messages, api_key=api_key)
 
     # 摘要应非空
-    assert len(summary) > 0, f"摘要为空"
+    assert len(summary) > 0, "摘要为空"
     # 摘要应包含关键信息（名字或爱好）
     summary_lower = summary.lower()
-    has_key_info = any(k in summary for k in ["小明", "篮球", "编程", "25"]) or \
-                   any(k in summary_lower for k in ["basketball", "programming", "ming"])
+    has_key_info = any(k in summary for k in ["小明", "篮球", "编程", "25"]) or any(
+        k in summary_lower for k in ["basketball", "programming", "ming"]
+    )
     assert has_key_info, f"摘要未包含关键信息: {summary}"
     print(f"\n[generate_summary] 摘要: {summary[:200]}")
 
@@ -105,7 +102,7 @@ async def test_compact_real():
     result = await compact(model, messages, settings, api_key=api_key)
 
     # summary 应非空
-    assert len(result.summary) > 0, f"摘要为空"
+    assert len(result.summary) > 0, "摘要为空"
     print(f"\n[compact] 摘要: {result.summary[:200]}")
 
     # retained_tail 应有内容（保留的最近消息）

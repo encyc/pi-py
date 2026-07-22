@@ -17,7 +17,6 @@ if _load_path.exists():
     load_dotenv(_load_path)
 
 from pi_ai import Model, ModelCost  # noqa: E402
-
 from pi_coding_agent import CodingAgent  # noqa: E402
 
 pytestmark = pytest.mark.integration
