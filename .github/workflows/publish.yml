@@ -30,3 +30,16 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        # 两种认证方式，任选其一：
+        #
+        # 方式 A — OIDC Trusted Publishing（推荐，无需 token）
+        #   在 PyPI 网页为每个包添加 pending publisher：
+        #     Owner: encyc  Repo: pi-py  Workflow: publish.yml
+        #   配好后去掉下面 with.password 这行即可自动 OIDC 认证
+        #
+        # 方式 B — PyPI API token（如果无法登录 PyPI 网页配置 OIDC）
+        #   生成一个 PyPI token（对所有项目有效），然后用：
+        #     gh secret set PYPI_API_TOKEN --repo encyc/pi-py
+        #   保留下面这行即可
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
