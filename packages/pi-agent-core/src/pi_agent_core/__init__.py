@@ -35,6 +35,22 @@ from .agent_loop import agent_loop, agent_loop_continue
 
 # ---- 事件流 ----
 from .event_stream import create_agent_stream
+
+# ---- harness: skills ----
+from .harness.skills import (
+    LoadSkillsOptions,
+    Skill,
+    SkillDiagnostic,
+    SkillLoadResult,
+    format_skill_invocation,
+    format_skills_for_prompt,
+    load_skill_from_file,
+    load_skills,
+    load_skills_from_dir,
+    parse_frontmatter,
+    validate_description,
+    validate_name,
+)
 from .types import (
     AgentContext,
     AgentEndEvent,
@@ -94,4 +110,17 @@ __all__ = [
     "AgentOptions",
     # 事件流
     "create_agent_stream",
+    # harness: skills
+    "Skill",
+    "SkillDiagnostic",
+    "SkillLoadResult",
+    "LoadSkillsOptions",
+    "parse_frontmatter",
+    "validate_name",
+    "validate_description",
+    "load_skill_from_file",
+    "load_skills_from_dir",
+    "load_skills",
+    "format_skills_for_prompt",
+    "format_skill_invocation",
 ]
