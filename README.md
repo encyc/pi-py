@@ -1,280 +1,60 @@
-# pi-ai and pi-agent-core: Python AI Agent Framework
+# py-mono
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+> Python SDK 复刻版 [earendil-works/pi](https://github.com/earendil-works/pi) —— AI agent 工具集：统一 LLM API、agent 运行时、编码 agent 工具集。
 
-**Python 复刻版** [badlogic/pi-mono](https://github.com/badlogic/pi-mono) - 一个简洁而强大的 AI Agent 框架。
+本项目是 [Pi](https://pi.dev) 的 **Python 库** 复刻。Pi（原名 `badlogic/pi-mono`，作者 Mario Zechner 于 2026 年 4 月加入 [Earendil Works](https://github.com/earendil-works) 后项目迁至现址）是一套 TypeScript 的 AI agent 工具集。本仓库将其核心库能力移植到 Python，**只做 SDK 库，不做 CLI/TUI**。
 
-这个项目将 Mario Zechner 的 TypeScript AI Agent 框架移植到 Python，提供统一的 LLM API 抽象层和有状态/无状态的 Agent 实现。
+## 同步状态
 
-## 项目结构
+- **当前对齐版本**：[`v0.81.1`](./UPSTREAM_VERSION)（2026-07-21）
+- **同步策略**：仅在上游发布 `0.x.0`（minor）时集中同步，详见 [`SYNC.md`](./SYNC.md)
+
+| 包 | 上游对应 | 状态 | 说明 |
+|---|---|---:|---|
+| [`pi-ai`](./packages/pi-ai) | `@earendil-works/pi-ai` | 🟡 待复刻 | 统一 LLM API（多 provider 适配 + 鉴权 + 类型） |
+| [`pi-agent-core`](./packages/pi-agent-core) | `@earendil-works/pi-agent-core` | 🟡 待复刻 | 有状态/无状态 agent 循环 + harness（技能/会话/压缩） |
+| [`pi-storage-sqlite`](./packages/pi-storage-sqlite) | `@earendil-works/pi-storage-sqlite-node` | 🟡 待复刻 | SQLite 会话存储后端 |
+| [`pi-coding-agent`](./packages/pi-coding-agent) | `@earendil-works/pi-coding-agent` | 🟡 待复刻 | 编码 agent SDK（bash/read/edit/write/grep 工具 + 会话） |
+| [`pi-server`](./packages/pi-server) | `@earendil-works/pi-server` | 🟡 待复刻 | agent 服务化（RPC/IPC，可选） |
+
+🟡 待复刻 / 🟢 可用 / 🔴 不复刻（有意偏离）
+
+## 包结构与依赖
 
 ```
-pi_ai/          # 统一的 LLM API 抽象层
-  ├── event_stream.py    # 事件流系统
-  ├── llm.py             # LLM 模型抽象
-  ├── config.py          # 配置管理
-  ├── model_router.py    # 模型路由
-  ├── types.py           # 核心类型定义
-  └── exceptions.py      # 异常处理
-
-pi_agent_core/  # Agent 核心实现
-  ├── agent.py           # 有状态 Agent
-  ├── agent_loop.py      # 无状态 Agent Loop
-  ├── types.py           # Agent 类型定义
-  └── skills.py          # Skill 管理系统
+packages/
+├── pi-ai/              # 叶子，无内部依赖 — 统一 LLM API
+├── pi-agent-core/      # → pi-ai — agent 运行时
+├── pi-storage-sqlite/  # → pi-ai + pi-agent-core — 可插拔存储后端
+├── pi-coding-agent/    # → pi-agent-core + pi-ai — 编码 agent SDK（不含 TUI）
+└── pi-server/          # → pi-coding-agent — RPC 服务（可选）
 ```
 
-## 灵感来源
+依赖方向自底向上，与上游一致。
 
-本项目受到 [badlogic/pi-mono](https://github.com/badlogic/pi-mono) 的深刻启发，特别是：
+## 技术选型
 
-- `@mariozechner/pi-ai` - TypeScript LLM 抽象层
-- `@mariozechner/pi-agent-core` - TypeScript Agent 框架
+| 领域 | 选型 | 对应上游 |
+|---|---|---|
+| 类型/校验 | Pydantic v2 | typebox |
+| 异步 | asyncio + AsyncGenerator | Promise + ReadableStream |
+| LLM provider | 各厂原生 Python SDK | 各厂原生 TS SDK |
+| 存储 | stdlib `sqlite3` | node:sqlite |
+| 包管理 | uv workspace | npm workspaces |
 
-原项目的优雅设计和清晰的架构理念是我进行 Python 移植的动力。我保持了核心设计思想，同时充分利用 Python 的异步特性和类型提示。
+每个有意偏离上游的地方，记录在对应包的 [`PORTING.md`](./packages/pi-ai/PORTING.md) 中。
 
-## 安装
+## 开发
+
+需要 Python 3.11+ 和 [uv](https://docs.astral.sh/uv/)。
 
 ```bash
-# 从 GitHub 安装
-pip install git+https://github.com/encyc/py-mono.git
-
-# 或本地开发模式
-git clone https://github.com/encyc/py-mono.git
-cd py-mono
-pip install -e .
+uv sync                 # 安装全部依赖（含 dev）
+uv run pytest           # 跑测试
+uv run ruff check       # lint
+uv run mypy packages    # 类型检查
 ```
-
-### 依赖
-
-- Python 3.10+
-- pydantic 2.0+
-- httpx (异步 HTTP 客户端)
-- python-dotenv
-
-## 快速开始
-
-### 1. 使用 pi-ai - 统一的 LLM API
-
-`pi-ai` 提供了统一的接口来调用多种 LLM Provider：
-
-```python
-from pi_ai import Model, stream_simple, get_model
-from pi_ai.types import UserMessage, TextContent
-
-# 创建模型实例
-model = get_model(
-    provider="openai",  # 或 "anthropic", "google"
-    model_id="gpt-4o",
-    api_key="your-api-key"
-)
-
-# 发送消息并流式接收响应
-async def chat():
-    message = UserMessage(content=[TextContent(text="Hello, world!")])
-  
-    async for event in stream_simple(model, message):
-        if hasattr(event, 'content'):
-            print(event.content.text, end='', flush=True)
-```
-
-### 2. 使用 Agent - 有状态的对话
-
-`pi-agent-core` 提供了有状态的 Agent 实现：
-
-```python
-from pi_agent_core import Agent
-from pi_ai import get_model
-
-# 创建 Agent
-agent = Agent(
-    system_prompt="You are a helpful assistant.",
-    model=get_model("openai", "gpt-4o", api_key="your-key")
-)
-
-# 订阅事件
-agent.subscribe(lambda event: print(f"Event: {event.type}"))
-
-# 运行对话
-async def main():
-    response = await agent.run("What is the capital of France?")
-    print(response)
-
-# 保持状态继续对话
-response2 = await agent.run("And what about Germany?")
-```
-
-### 3. 使用 agent_loop - 无状态的函数式调用
-
-对于不需要保持状态的场景，使用无状态的 `agent_loop`：
-
-```python
-from pi_agent_core import agent_loop
-from pi_agent_core.types import AgentLoopConfig
-from pi_ai import get_model
-
-async def chat():
-    config = AgentLoopConfig(
-        model=get_model("openai", "gpt-4o"),
-        system_prompt="You are a helpful assistant."
-    )
-  
-    messages = [{"role": "user", "content": "Hello!"}]
-  
-    async for event in agent_loop(messages, config):
-        if event.type == "message_update":
-            print(event.message, end='', flush=True)
-```
-
-### 4. 添加工具 (Tools)
-
-Agent 可以调用外部工具：
-
-```python
-from pydantic import BaseModel
-from pi_agent_core import Agent, AgentTool
-
-class GetWeatherArgs(BaseModel):
-    city: str
-
-async def get_weather(city: str, tool_call_id, context, update_callback):
-    # 调用天气 API
-    return AgentToolResult(
-        content=[TextContent(text=f"Weather in {city}: Sunny")]
-    )
-
-agent = Agent(
-    system_prompt="You are a helpful assistant.",
-    model=get_model("openai", "gpt-4o"),
-    tools=[
-        AgentTool(
-            name="get_weather",
-            label="Get Weather",
-            description="Get current weather for a city",
-            parameters=GetWeatherArgs,
-            execute=get_weather
-        )
-    ]
-)
-```
-
-### 5. 使用配置文件
-
-通过 YAML 配置文件管理多个 LLM 配置：
-
-```yaml
-# llm.yaml
-use_llm: glm_4_7
-
-llms:
-  glm_4_7:
-    provider: openai
-    api_key: ${ZHIPU_API_KEY:}
-    base_url: https://open.bigmodel.cn/api/paas/v4
-    model: glm-4-plus
-
-  openai_gpt4o:
-    provider: openai
-    api_key: ${OPENAI_API_KEY:}
-    model: gpt-4o
-```
-
-```python
-from pi_ai import get_model_from_config
-
-model = get_model_from_config()
-```
-
-## 事件系统
-
-框架提供了丰富的事件流，可以监控 Agent 的整个生命周期：
-
-| 事件类型                  | 描述             |
-| ------------------------- | ---------------- |
-| `agent_start`           | Agent 开始运行   |
-| `turn_start`            | 新的对话轮次开始 |
-| `message_start`         | 新消息开始生成   |
-| `message_update`        | 消息流式更新     |
-| `tool_execution_start`  | 工具开始执行     |
-| `tool_execution_update` | 工具执行进度更新 |
-| `turn_end`              | 对话轮次结束     |
-| `agent_end`             | Agent 运行结束   |
-
-```python
-agent.subscribe(lambda event: {
-    "agent_start": lambda: print("Agent started"),
-    "message_update": lambda e: print(f"Streaming: {e.message}"),
-    "tool_execution_end": lambda e: print(f"Tool {e.tool_name} finished")
-}.get(event.type, lambda: None)())
-```
-
-## 支持的 LLM Provider
-
-- **OpenAI** - GPT-4o, GPT-4o-mini, etc.
-- **Anthropic** - Claude Sonnet 4, Opus 4, Haiku 4
-- **Google** - Gemini Pro, Gemini Flash
-- **自定义** - 实现自己的 Provider 适配器
-
-## 高级功能
-
-### 思考模式 (Thinking)
-
-```python
-from pi_ai.types import ThinkingLevel
-
-agent = Agent(
-    system_prompt="You are a helpful assistant.",
-    model=get_model("anthropic", "claude-sonnet-4-20250514"),
-    thinking_level=ThinkingLevel.HIGH  # 启用深度思考
-)
-```
-
-### 模型路由 (Model Router)
-
-根据任务复杂度自动选择模型：
-
-```python
-from pi_ai import ModelRouter, create_model_router_from_config
-
-router = create_model_router_from_config()
-model = router.get_model_for_intent("complex_analysis")
-```
-
-### 上下文转换
-
-```python
-async def transform_context(messages, metadata):
-    # 裁剪上下文、注入 RAG 检索内容等
-    return messages[:10] + [retrieved_context]
-
-agent = Agent(
-    system_prompt="You are a helpful assistant.",
-    model=get_model("openai", "gpt-4o"),
-    transform_context=transform_context
-)
-```
-
-## 与原版的区别
-
-| 特性     | TypeScript 原版 | Python 版本       |
-| -------- | --------------- | ----------------- |
-| 异步模型 | Promise         | asyncio           |
-| 类型系统 | TypeScript      | typing + Pydantic |
-| 流式处理 | ReadableStream  | AsyncGenerator    |
-| 配置管理 | JSON            | YAML + 环境变量   |
-| 参数验证 | TypeScript 类型 | Pydantic 模型     |
 
 ## 许可证
 
-MIT License - 与原项目保持一致
-
-## 致谢
-
-- [Mario Zechner](https://github.com/badlogic) - 原始 pi-mono 框架作者
-- [badlogic/pi-mono](https://github.com/badlogic/pi-mono) - TypeScript 原版项目
-
-## 相关链接
-
-- 原项目: https://github.com/badlogic/pi-mono
-- 问题反馈: https://github.com/encyc/py-mono/issues
+MIT，与上游保持一致。详见 [`LICENSE`](./LICENSE)。

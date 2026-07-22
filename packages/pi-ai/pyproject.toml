@@ -1,0 +1,19 @@
+[project]
+name = "pi-ai"
+version = "0.81.1"
+description = "Python port of @earendil-works/pi-ai — Unified LLM API"
+readme = "README.md"
+license = { file = "../../LICENSE" }
+requires-python = ">=3.11"
+authors = [{ name = "Justin Gao" }]
+dependencies = [
+    "pydantic>=2.7",
+    # provider SDK 与 httpx 等留待阶段 1 实现时按需补充
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pi_ai"]

@@ -1,0 +1,95 @@
+[project]
+name = "py-mono"
+version = "0.0.0"
+description = "Python port of earendil-works/pi — AI agent toolkit (unified LLM API, agent runtime, coding agent SDK)"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [{ name = "Justin Gao" }]
+# 根包不发布到 PyPI
+private = true
+# 把所有 workspace 成员列为依赖, 使 uv sync 以 editable 方式安装全部包,
+# 便于在根目录直接跑 pytest / ruff / mypy 覆盖所有子包
+dependencies = [
+    "pi-ai",
+    "pi-agent-core",
+    "pi-storage-sqlite",
+    "pi-coding-agent",
+    "pi-server",
+]
+
+# ---- 开发依赖(质量工具 + 测试), 所有子包共享 ----
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pre-commit>=3.8",
+]
+
+[tool.uv.workspace]
+# uv workspace: 所有子包作为成员, 可互相以 editable 方式引用
+members = ["packages/*"]
+
+[tool.uv.sources]
+# 包间依赖走 workspace, 而非从 PyPI 解析
+pi-ai = { workspace = true }
+pi-agent-core = { workspace = true }
+pi-storage-sqlite = { workspace = true }
+pi-coding-agent = { workspace = true }
+pi-server = { workspace = true }
+
+# ============================================
+# 共享质量工具配置
+# ============================================
+
+[tool.ruff]
+src = ["packages/*/src"]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["dist", "build", "node_modules"]
+
+[tool.ruff.lint]
+# 启用规则集: 基础(E/F) + 导入(I) + PEP8 名(N) + Bugbear(B) + 上行/SIM + async(ASYNC)
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "ASYNC"]
+# 常见可接受的: 行太长(由 formatter 处理)、未注解 magic method
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试里允许未用导入/fixture 等
+"tests/**" = ["F401", "F841"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = [
+    "packages/pi-ai/src",
+    "packages/pi-agent-core/src",
+    "packages/pi-storage-sqlite/src",
+    "packages/pi-coding-agent/src",
+    "packages/pi-server/src",
+]
+# monorepo 多包: 只严格检查 src/ 源码(测试目录有同名模块, 单独用宽松配置处理)
+files = ["packages/pi-ai/src", "packages/pi-agent-core/src", "packages/pi-storage-sqlite/src", "packages/pi-coding-agent/src", "packages/pi-server/src"]
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+warn_redundant_casts = true
+disallow_untyped_defs = true
+namespace_packages = true
+explicit_package_bases = true
+# Pydantic 插件: v2
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+asyncio_mode = "auto"
+testpaths = ["packages"]
+python_files = ["test_*.py"]
+# monorepo 多包:用 importlib 模式避免同名测试模块(test_smoke)冲突
+addopts = "-ra --strict-markers --import-mode=importlib"
