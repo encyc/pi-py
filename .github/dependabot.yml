@@ -4,10 +4,4 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    # uv workspace monorepo, dependencies in root pyproject.toml
-    open-pull-requests-limit: 10
-
-  - package-ecosystem: "github-actions"
-    directory: "/"
-    schedule:
-      interval: "monthly"
+    open-pull-requests-limit: 5
