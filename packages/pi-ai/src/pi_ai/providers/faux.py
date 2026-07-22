@@ -70,7 +70,8 @@ def clear_scripts() -> None:
 def _pop_script() -> FauxScript:
     if not _scripts:
         return FauxScript(text="faux response")
-    return _scripts.pop()
+    # FIFO：先 push 的先消费（便于多轮脚本按顺序匹配多个 turn）
+    return _scripts.pop(0)
 
 
 def _run_faux(
