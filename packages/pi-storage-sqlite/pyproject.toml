@@ -18,3 +18,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pi_storage_sqlite"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/pi_storage_sqlite/migrations.sql" = "pi_storage_sqlite/migrations.sql"
