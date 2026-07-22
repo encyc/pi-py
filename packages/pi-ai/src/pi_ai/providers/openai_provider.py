@@ -97,18 +97,22 @@ class _ToolCallBlock:
 
 
 def _parse_chunk_usage(raw: Any, model: Model) -> Usage:
-    """从 OpenAI chunk usage 提取 token 统计。对应上游 ``parseChunkUsage``。"""
+    """从 OpenAI chunk usage 提取 token 统计。对应上游 ``parseChunkUsage``。
+
+    注意：SDK 对象的属性可能存在但值为 None（如 DeepSeek 的 cache_write_tokens=None），
+    故所有字段统一 ``or 0`` 兜底，避免 ``int - None`` 崩溃。
+    """
     prompt_tokens = getattr(raw, "prompt_tokens", 0) or 0
     ptd = getattr(raw, "prompt_tokens_details", None)
     cached = getattr(ptd, "cached_tokens", None) if ptd else None
-    cache_read = cached or getattr(raw, "prompt_cache_hit_tokens", 0) or 0
-    cache_write = getattr(ptd, "cache_write_tokens", 0) if ptd else 0
+    cache_read = (cached or getattr(raw, "prompt_cache_hit_tokens", 0) or 0) or 0
+    cache_write = (getattr(ptd, "cache_write_tokens", 0) if ptd else 0) or 0
 
     # cached_tokens 是缓存"读取"命中，不减去；input 扣除缓存部分使恒等式成立
     input_tokens = max(0, prompt_tokens - cache_read - cache_write)
     output_tokens = getattr(raw, "completion_tokens", 0) or 0
     ctd = getattr(raw, "completion_tokens_details", None)
-    reasoning = getattr(ctd, "reasoning_tokens", 0) if ctd else 0
+    reasoning = (getattr(ctd, "reasoning_tokens", 0) if ctd else 0) or 0
 
     total = input_tokens + output_tokens + cache_read + cache_write
     usage = Usage(

@@ -38,6 +38,7 @@ class _FakeUsage:
         cached_tokens=None,
         cache_write_tokens=0,
         reasoning_tokens=0,
+        completion_tokens_details="auto",
     ):
         self.prompt_tokens = prompt_tokens
         self.completion_tokens = completion_tokens
@@ -46,7 +47,13 @@ class _FakeUsage:
             (),
             {"cached_tokens": cached_tokens, "cache_write_tokens": cache_write_tokens},
         )()
-        self.completion_tokens_details = type("Det", (), {"reasoning_tokens": reasoning_tokens})()
+        # "auto"=构造对象；None=模拟 DeepSeek（completion_tokens_details 为 None）
+        if completion_tokens_details == "auto":
+            self.completion_tokens_details = type(
+                "Det", (), {"reasoning_tokens": reasoning_tokens}
+            )()
+        else:
+            self.completion_tokens_details = completion_tokens_details
 
 
 def test_usage_basic():
@@ -80,6 +87,29 @@ def test_usage_cost_calculation():
     assert pytest.approx(usage.cost.input, rel=1e-6) == 2.5
     assert pytest.approx(usage.cost.output, rel=1e-6) == 5.0
     assert pytest.approx(usage.cost.total, rel=1e-6) == 7.5
+
+
+def test_usage_deepseek_none_fields():
+    """回归：DeepSeek 返回 completion_tokens_details=None 且 cache_write_tokens=None。
+
+    SDK 对象属性存在但值为 None 时，getattr 返回 None（非默认值），
+    直接做减法会 ``int - None`` 崩溃。所有字段须 ``or 0`` 兜底。
+    """
+    model = _make_model()
+    raw = _FakeUsage(
+        prompt_tokens=8,
+        completion_tokens=5,
+        cached_tokens=0,
+        cache_write_tokens=None,
+        completion_tokens_details=None,
+    )
+    usage = _parse_chunk_usage(raw, model)
+    assert usage.input == 8
+    assert usage.output == 5
+    assert usage.cache_read == 0
+    assert usage.cache_write == 0
+    assert usage.total_tokens == 13
+    assert usage.reasoning is None
 
 
 def test_streaming_json_complete():

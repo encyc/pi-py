@@ -92,4 +92,8 @@ asyncio_mode = "auto"
 testpaths = ["packages"]
 python_files = ["test_*.py"]
 # monorepo 多包:用 importlib 模式避免同名测试模块(test_smoke)冲突
-addopts = "-ra --strict-markers --import-mode=importlib"
+# -m "not integration"：默认跳过集成测试（真实 API 调用，需 key + 消耗额度）
+addopts = "-ra --strict-markers --import-mode=importlib -m 'not integration'"
+markers = [
+    "integration: 真实 LLM 调用集成测试（需 API key，消耗额度；默认跳过）",
+]
