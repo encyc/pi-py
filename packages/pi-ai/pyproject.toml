@@ -1,9 +1,9 @@
 [project]
 name = "pi-ai"
 version = "0.81.1"
-description = "Python port of @earendil-works/pi-ai — Unified LLM API"
+description = "Python port of @earendil-works/pi-ai — Unified LLM API with multi-provider streaming"
 readme = "README.md"
-license = { file = "../../LICENSE" }
+license = { text = "MIT" }
 requires-python = ">=3.11"
 authors = [{ name = "Justin Gao" }]
 dependencies = [
@@ -13,6 +13,22 @@ dependencies = [
     "json-repair>=0.30",
     "python-dotenv>=1.0",
 ]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Framework :: Pydantic",
+    "Intended Audience :: Developers",
+]
+
+[project.urls]
+Homepage = "https://github.com/encyc/pi-py"
+Repository = "https://github.com/encyc/pi-py"
+Issues = "https://github.com/encyc/pi-py/issues"
 
 [build-system]
 requires = ["hatchling"]
