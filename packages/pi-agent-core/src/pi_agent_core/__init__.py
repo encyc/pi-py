@@ -36,6 +36,19 @@ from .agent_loop import agent_loop, agent_loop_continue
 # ---- 事件流 ----
 from .event_stream import create_agent_stream
 
+# ---- harness: compaction ----
+from .harness.compaction import (
+    CompactionResult,
+    CompactionSettings,
+    calculate_context_tokens,
+    compact,
+    estimate_context_tokens,
+    estimate_tokens,
+    find_cut_point,
+    generate_summary,
+    should_compact,
+)
+
 # ---- harness: session ----
 from .harness.session import (
     InMemorySessionStorage,
@@ -138,4 +151,14 @@ __all__ = [
     "SessionStorage",
     "InMemorySessionStorage",
     "JsonlSessionStorage",
+    # harness: compaction
+    "CompactionResult",
+    "CompactionSettings",
+    "calculate_context_tokens",
+    "compact",
+    "estimate_context_tokens",
+    "estimate_tokens",
+    "find_cut_point",
+    "generate_summary",
+    "should_compact",
 ]
