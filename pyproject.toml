@@ -65,6 +65,10 @@ ignore = ["E501"]
 # （上游 Node.js 也是同步 fs，工具执行快，不值得 asyncio.to_thread 包装）。
 # SIM105（try-except-pass 杀进程）也是有意为之。
 "packages/pi-coding-agent/src/pi_coding_agent/tools.py" = ["ASYNC230", "ASYNC240", "SIM105", "SIM108"]
+# server: async 函数中使用 os.path（socket 文件管理）和 try-except-pass（进程管理）
+"packages/pi-server/src/pi_server/ipc.py" = ["ASYNC240", "SIM105"]
+"packages/pi-server/src/pi_server/supervisor.py" = ["SIM105"]
+"packages/pi-server/tests/test_server.py" = ["SIM105"]
 
 [tool.ruff.format]
 quote-style = "double"
