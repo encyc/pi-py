@@ -36,6 +36,15 @@ from .agent_loop import agent_loop, agent_loop_continue
 # ---- 事件流 ----
 from .event_stream import create_agent_stream
 
+# ---- harness: session ----
+from .harness.session import (
+    InMemorySessionStorage,
+    JsonlSessionStorage,
+    Session,
+    SessionEntry,
+    SessionStorage,
+)
+
 # ---- harness: skills ----
 from .harness.skills import (
     LoadSkillsOptions,
@@ -123,4 +132,10 @@ __all__ = [
     "load_skills",
     "format_skills_for_prompt",
     "format_skill_invocation",
+    # harness: session
+    "Session",
+    "SessionEntry",
+    "SessionStorage",
+    "InMemorySessionStorage",
+    "JsonlSessionStorage",
 ]
