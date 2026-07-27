@@ -593,7 +593,7 @@ wheels = [
 
 [[package]]
 name = "pi-agent-core"
-version = "0.81.1"
+version = "0.82.1"
 source = { editable = "packages/pi-agent-core" }
 dependencies = [
     { name = "pi-ai" },
@@ -610,7 +610,7 @@ requires-dist = [
 
 [[package]]
 name = "pi-ai"
-version = "0.81.1"
+version = "0.82.1"
 source = { editable = "packages/pi-ai" }
 dependencies = [
     { name = "anthropic" },
@@ -631,7 +631,7 @@ requires-dist = [
 
 [[package]]
 name = "pi-coding-agent"
-version = "0.81.1"
+version = "0.82.1"
 source = { editable = "packages/pi-coding-agent" }
 dependencies = [
     { name = "pi-agent-core" },
@@ -693,7 +693,7 @@ dev = [
 
 [[package]]
 name = "pi-server"
-version = "0.81.1"
+version = "0.82.1"
 source = { editable = "packages/pi-server" }
 dependencies = [
     { name = "pi-coding-agent" },
@@ -704,7 +704,7 @@ requires-dist = [{ name = "pi-coding-agent", editable = "packages/pi-coding-agen
 
 [[package]]
 name = "pi-storage-sqlite"
-version = "0.81.1"
+version = "0.82.1"
 source = { editable = "packages/pi-storage-sqlite" }
 dependencies = [
     { name = "pi-agent-core" },

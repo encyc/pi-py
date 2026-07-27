@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import pytest
 
-from pi_ai import Model, ModelCost
+from pi_ai import AssistantMessage, Context, Model, ModelCost, Tool, ToolCall
 from pi_ai.providers.openai_provider import (
     _STOP_REASON_MAP,
+    _convert_messages,
+    _convert_tools,
     _parse_chunk_usage,
     _parse_streaming_json,
 )
@@ -147,3 +149,92 @@ def test_stop_reason_mapping():
     assert _STOP_REASON_MAP["tool_calls"] == "toolUse"
     assert _STOP_REASON_MAP["function_call"] == "toolUse"
     assert _STOP_REASON_MAP["content_filter"] == "error"
+
+
+def test_convert_tools_enables_required_strict_json_schema():
+    tool = Tool(
+        name="answer",
+        description="Return an answer",
+        parameters={
+            "type": "object",
+            "properties": {"value": {"type": "string"}},
+            "required": ["value"],
+            "additionalProperties": False,
+        },
+        constrained_sampling={"type": "json_schema", "strict": "require"},
+    )
+
+    converted = _convert_tools([tool], supports_strict_mode=True)
+
+    assert converted[0]["function"]["strict"] is True
+    assert converted[0]["function"]["parameters"]["additionalProperties"] is False
+
+
+def test_convert_tools_rejects_required_strict_when_unsupported():
+    tool = Tool(
+        name="answer",
+        description="Return an answer",
+        parameters={"type": "object", "properties": {}, "required": []},
+        constrained_sampling={"type": "json_schema", "strict": "require"},
+    )
+
+    with pytest.raises(ValueError, match="requires JSON-schema constrained sampling"):
+        _convert_tools([tool], supports_strict_mode=False)
+
+
+def test_convert_tools_uses_openai_lark_grammar():
+    tool = Tool(
+        name="sql",
+        description="Generate SQL",
+        parameters={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+        constrained_sampling={
+            "type": "grammar",
+            "variants": {
+                "openai_lark": 'start: "SELECT 1"',
+                "openai_regex": "SELECT .*",
+            },
+        },
+    )
+
+    converted = _convert_tools([tool], supports_openai_grammar_tools=True)
+
+    assert converted == [
+        {
+            "type": "custom",
+            "custom": {
+                "name": "sql",
+                "description": "Generate SQL",
+                "format": {
+                    "type": "grammar",
+                    "grammar": {"syntax": "lark", "definition": 'start: "SELECT 1"'},
+                },
+            },
+        }
+    ]
+
+
+def test_convert_messages_replays_grammar_tool_as_custom_call():
+    context = Context(
+        messages=[
+            AssistantMessage(
+                content=[ToolCall(id="call-1", name="sql", arguments={"query": "SELECT 1"})],
+                api="openai-completions",
+                provider="openai",
+                model="gpt",
+            )
+        ]
+    )
+
+    messages, _ = _convert_messages(context, {"sql": "query"})
+
+    assert messages[0]["tool_calls"] == [
+        {
+            "id": "call-1",
+            "type": "custom",
+            "custom": {"name": "sql", "input": "SELECT 1"},
+        }
+    ]

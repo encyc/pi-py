@@ -278,6 +278,9 @@ class Tool(BaseModel):
     name: str
     description: str
     parameters: dict[str, Any] = Field(default_factory=dict)
+    constrained_sampling: dict[str, Any] | Literal[False] | None = Field(
+        default=None, alias="constrainedSampling"
+    )
 
     def to_json_schema(self) -> dict[str, Any]:
         """返回给 LLM 的 JSON Schema。"""
@@ -372,6 +375,7 @@ class StreamOptions(BaseModel):
     timeout_ms: int | None = Field(default=None, alias="timeoutMs")
     max_retries: int | None = Field(default=None, alias="maxRetries")
     max_retry_delay_ms: int | None = Field(default=None, alias="maxRetryDelayMs")
+    cancel_event: Any = Field(default=None, alias="cancelEvent", exclude=True)
     metadata: dict[str, Any] | None = None
     env: dict[str, str] | None = None
 

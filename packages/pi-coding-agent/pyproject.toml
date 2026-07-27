@@ -1,14 +1,14 @@
 [project]
 name = "pi-coding-agent"
-version = "0.81.1"
+version = "0.82.1"
 description = "Python port of @earendil-works/pi-coding-agent — Coding agent SDK (core only, no TUI)"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
 authors = [{ name = "Justin Gao" }]
 dependencies = [
-    "pi-ai>=0.81.1,<0.82",
-    "pi-agent-core>=0.81.1,<0.82",
+    "pi-ai>=0.82.1,<0.83",
+    "pi-agent-core>=0.82.1,<0.83",
     "pydantic>=2.7",
     "pyyaml>=6",
 ]

@@ -1,6 +1,6 @@
 # pi-ai 移植注记
 
-对应上游：[`@earendil-works/pi-ai`](https://github.com/earendil-works/pi/tree/main/packages/ai)（v0.81.1）
+对应上游：[`@earendil-works/pi-ai`](https://github.com/earendil-works/pi/tree/main/packages/ai)（v0.82.1）
 
 ## 进度
 
@@ -16,6 +16,7 @@
 | providers/openai（Chat Completions） | ✅ | `api/openai-completions.ts` |
 | providers/anthropic（含 thinking 支持） | ✅ | `api/anthropic-messages.ts` |
 | retry（重试工具） | ✅ | `utils/retry.ts` |
+| constrained sampling（strict JSON Schema + OpenAI grammar） | ✅ | `api/constrained-sampling.ts` |
 | providers/google / mistral / bedrock | 🟡 后续 | `api/*.ts` |
 | auth（OAuth） | 🟡 后续 | `auth/*` |
 | images（图像生成） | 🟡 后续 | `images*.ts` |
@@ -46,6 +47,16 @@
 ## cherry-pick
 
 （暂无）
+
+## v0.82.1 同步说明
+
+- `Tool.constrainedSampling` 已映射为 Pydantic 的 `constrained_sampling`
+  （序列化别名保持 camelCase）。
+- OpenAI Chat Completions 支持 strict JSON Schema 与 Lark/regex grammar 工具定义；
+  Anthropic Messages 支持 strict tool schema。
+- OpenAI/Anthropic SDK 内建重试保持关闭，由可取消的 provider retry 包装器处理。
+- DNS `getaddrinfo` / `ENOTFOUND` / `EAI_AGAIN` 错误纳入 assistant 自动重试分类。
+- OAuth、新 provider 与完整动态模型目录仍属于既有裁剪范围，未在本轮扩展。
 
 ## 待办（下一轮）
 

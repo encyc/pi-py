@@ -4,5 +4,5 @@
 def test_import() -> None:
     import pi_storage_sqlite
 
-    assert pi_storage_sqlite.__version__
-    assert pi_storage_sqlite.__upstream_ref__ == "earendil-works/pi@v0.81.1"
+    assert pi_storage_sqlite.__version__ == "0.82.1"
+    assert pi_storage_sqlite.__upstream_ref__ == "earendil-works/pi@v0.82.1"

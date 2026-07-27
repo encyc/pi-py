@@ -346,7 +346,14 @@ def _convert_tools(tools: list[AgentTool]) -> list[Any]:
     out = []
     for t in tools:
         params = t.parameters
-        out.append(Tool(name=t.name, description=t.description, parameters=params))
+        out.append(
+            Tool(
+                name=t.name,
+                description=t.description,
+                parameters=params,
+                constrained_sampling=getattr(t, "constrained_sampling", None),
+            )
+        )
     return out
 
 

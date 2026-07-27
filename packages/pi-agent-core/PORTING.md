@@ -1,6 +1,6 @@
 # pi-agent-core 移植注记
 
-对应上游：[`@earendil-works/pi-agent-core`](https://github.com/earendil-works/pi/tree/main/packages/agent)（v0.81.1）
+对应上游：[`@earendil-works/pi-agent-core`](https://github.com/earendil-works/pi/tree/main/packages/agent)（v0.82.1）
 
 ## 有意偏离上游
 
@@ -14,6 +14,14 @@
 ## cherry-pick
 
 （暂无）
+
+## v0.82.1 同步说明
+
+- Compaction/summary 请求使用独立 routing session，并强制
+  `cache_retention="none"`，避免污染主会话缓存。
+- Agent tools 会将 `constrained_sampling` 透传到 pi-ai。
+- 上游新增的 Harness execution tools 与本仓库 `pi-coding-agent` 工具集职责重叠；
+  当前精简 Harness 尚未公开 `ExecutionEnv`/`toolContext`，因此未引入不完整兼容层。
 
 ## 待办
 

@@ -16,6 +16,7 @@ token 估算用启发式（chars/4），上游有更精确的 tokenizer 但 Pyth
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -187,11 +188,12 @@ async def generate_summary(
     from pi_ai import Context, SimpleStreamOptions
 
     ctx = Context(system_prompt=SUMMARIZATION_SYSTEM_PROMPT, messages=[ctx_msg])
-    opts = (
-        SimpleStreamOptions(max_tokens=2000, **options)
-        if options
-        else SimpleStreamOptions(max_tokens=2000)
-    )
+    isolated_options = {
+        **options,
+        "session_id": str(uuid.uuid4()),
+        "cache_retention": "none",
+    }
+    opts = SimpleStreamOptions(max_tokens=2000, **isolated_options)
     result = await complete_simple(model, ctx, opts)
     # 提取文本
     if result.content and isinstance(result.content[0], TextContent):

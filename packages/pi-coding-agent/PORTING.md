@@ -1,6 +1,6 @@
 # pi-coding-agent 移植注记
 
-对应上游：[`@earendil-works/pi-coding-agent`](https://github.com/earendil-works/pi/tree/main/packages/coding-agent)（v0.81.1）
+对应上游：[`@earendil-works/pi-coding-agent`](https://github.com/earendil-works/pi/tree/main/packages/coding-agent)（v0.82.1）
 
 ## 有意偏离上游（重要：本包大幅裁剪）
 

@@ -1,6 +1,6 @@
 # pi-storage-sqlite 移植注记
 
-对应上游：[`@earendil-works/pi-storage-sqlite-node`](https://github.com/earendil-works/pi/tree/main/packages/storage/sqlite-node)（v0.81.1）
+对应上游：[`@earendil-works/pi-storage-sqlite-node`](https://github.com/earendil-works/pi/tree/main/packages/storage/sqlite-node)（v0.82.1）
 
 ## 有意偏离上游
 
