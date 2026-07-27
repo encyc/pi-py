@@ -1,6 +1,6 @@
 # pi-server 移植注记
 
-对应上游：[`@earendil-works/pi-server`](https://github.com/earendil-works/pi/tree/main/packages/server)（v0.81.1）
+对应上游：[`@earendil-works/pi-server`](https://github.com/earendil-works/pi/tree/main/packages/server)（v0.82.1）
 
 ## 有意偏离上游
 

@@ -12,6 +12,7 @@ from pi_agent_core import (
 )
 from pi_ai import (
     AssistantMessage,
+    Model,
     TextContent,
     ToolCall,
     ToolResultMessage,
@@ -144,3 +145,32 @@ def test_find_cut_point_avoids_tool_result():
 
 def test_find_cut_point_empty():
     assert find_cut_point([], keep_recent_tokens=100) == 0
+
+
+async def test_generate_summary_isolates_routing_session_and_disables_cache(monkeypatch):
+    from pi_agent_core.harness import compaction
+
+    captured = []
+
+    async def fake_complete(model, context, options):
+        captured.append(options)
+        return AssistantMessage(content=[TextContent(text="summary")])
+
+    monkeypatch.setattr(compaction, "complete_simple", fake_complete)
+    model = Model(
+        id="test",
+        name="test",
+        api="openai-completions",
+        provider="test",
+        base_url="https://example.com",
+    )
+
+    first = await compaction.generate_summary(
+        model, [_user("first")], session_id="original", cache_retention="long"
+    )
+    second = await compaction.generate_summary(model, [_user("second")])
+
+    assert first == second == "summary"
+    assert captured[0].cache_retention == "none"
+    assert captured[0].session_id != "original"
+    assert captured[0].session_id != captured[1].session_id

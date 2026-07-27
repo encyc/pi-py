@@ -41,6 +41,8 @@ def _ok_msg() -> AssistantMessage:
         "ResourceExhausted",
         "timed out after 30000ms",
         "you can retry your request",
+        "getaddrinfo ENOTFOUND api.example.com",
+        "socket EAI_AGAIN api.example.com",
     ],
 )
 def test_retryable_errors(msg):

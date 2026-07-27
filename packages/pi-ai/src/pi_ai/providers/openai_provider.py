@@ -23,6 +23,14 @@ from typing import Any
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
 
+from ..constrained_sampling import (
+    GrammarToolInputJsonBuffer,
+    append_grammar_tool_input_json_delta,
+    create_grammar_tool_input_properties,
+    get_grammar_tool_input,
+    resolve_grammar_constrained_sampling,
+    resolve_json_schema_strict_sampling,
+)
 from ..event_stream import EventStream
 from ..events import (
     AssistantMessageEvent,
@@ -38,6 +46,7 @@ from ..events import (
     ToolCallEndEvent,
     ToolCallStartEvent,
 )
+from ..provider_retry import retry_provider_request
 from ..types import (
     AssistantMessage,
     Context,
@@ -82,13 +91,32 @@ class _ToolCallBlock:
     仅解析期使用。
     """
 
-    __slots__ = ("tool_call", "partial_args", "stream_index", "content_index")
+    __slots__ = (
+        "tool_call",
+        "partial_args",
+        "stream_index",
+        "content_index",
+        "custom_input_property",
+        "custom_input_buffer",
+    )
 
-    def __init__(self, content_index: int, id: str = "", name: str = "") -> None:
+    def __init__(
+        self,
+        content_index: int,
+        id: str = "",
+        name: str = "",
+        custom_input_property: str | None = None,
+    ) -> None:
         self.tool_call = ToolCall(id=id, name=name, arguments={})
         self.partial_args: str = ""
         self.stream_index: int | None = None
         self.content_index = content_index
+        self.custom_input_property = custom_input_property
+        self.custom_input_buffer = (
+            GrammarToolInputJsonBuffer() if custom_input_property is not None else None
+        )
+        if custom_input_property is not None:
+            self.tool_call.arguments = {custom_input_property: ""}
 
 
 # ============================================================
@@ -161,24 +189,51 @@ def _create_client(
     )
 
 
-def _convert_tools(tools: list[Any]) -> list[dict[str, Any]]:
+def _convert_tools(
+    tools: list[Any],
+    *,
+    supports_strict_mode: bool = True,
+    supports_openai_grammar_tools: bool = False,
+) -> list[dict[str, Any]]:
     """ToolDef 列表 -> OpenAI tools 格式。"""
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": t.name,
-                "description": t.description,
-                "parameters": t.to_json_schema() if hasattr(t, "to_json_schema") else t.parameters,
-                "strict": False,
-            },
+    converted: list[dict[str, Any]] = []
+    for tool in tools:
+        grammar = resolve_grammar_constrained_sampling(tool, supports_openai_grammar_tools)
+        if grammar is not None:
+            converted.append(
+                {
+                    "type": "custom",
+                    "custom": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "format": {
+                            "type": "grammar",
+                            "grammar": {
+                                "syntax": grammar.format,
+                                "definition": grammar.definition,
+                            },
+                        },
+                    },
+                }
+            )
+            continue
+        strict = resolve_json_schema_strict_sampling(tool, supports_strict_mode)
+        function = {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": (
+                tool.to_json_schema() if hasattr(tool, "to_json_schema") else tool.parameters
+            ),
         }
-        for t in tools
-    ]
+        if supports_strict_mode:
+            function["strict"] = strict if strict is not None else False
+        converted.append({"type": "function", "function": function})
+    return converted
 
 
 def _convert_messages(
     context: Context,
+    grammar_tool_input_properties: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, str] | None]:
     """Context.messages -> OpenAI messages。返回 (messages, dev_headers)。"""
     out: list[dict[str, Any]] = []
@@ -209,16 +264,31 @@ def _convert_messages(
             tool_calls: list[dict[str, Any]] = []
             for block in msg.__dict__["content"]:
                 if isinstance(block, ToolCall):
-                    tool_calls.append(
-                        {
-                            "id": block.id,
-                            "type": "function",
-                            "function": {
-                                "name": block.name,
-                                "arguments": json.dumps(block.arguments),
-                            },
-                        }
-                    )
+                    input_property = (grammar_tool_input_properties or {}).get(block.name)
+                    if input_property is not None:
+                        tool_calls.append(
+                            {
+                                "id": block.id,
+                                "type": "custom",
+                                "custom": {
+                                    "name": block.name,
+                                    "input": get_grammar_tool_input(
+                                        block.name, block.arguments, input_property
+                                    ),
+                                },
+                            }
+                        )
+                    else:
+                        tool_calls.append(
+                            {
+                                "id": block.id,
+                                "type": "function",
+                                "function": {
+                                    "name": block.name,
+                                    "arguments": json.dumps(block.arguments),
+                                },
+                            }
+                        )
             entry: dict[str, Any] = {"role": "assistant"}
             if text_parts:
                 entry["content"] = "\n".join(text_parts)
@@ -273,7 +343,12 @@ def _run_openai_stream(
         client = _create_client(model, api_key, options.headers if options else None)
 
         # 构建请求参数
-        messages, _ = _convert_messages(context)
+        compat = model.compat or {}
+        grammar_tool_input_properties = create_grammar_tool_input_properties(
+            context.tools,
+            compat.get("supportsOpenAIGrammarTools", False),
+        )
+        messages, _ = _convert_messages(context, grammar_tool_input_properties)
         params: dict[str, Any] = {
             "model": model.id,
             "messages": messages,
@@ -281,7 +356,11 @@ def _run_openai_stream(
             "stream_options": {"include_usage": True},
         }
         if context.tools:
-            params["tools"] = _convert_tools(context.tools)
+            params["tools"] = _convert_tools(
+                context.tools,
+                supports_strict_mode=compat.get("supportsStrictMode", True),
+                supports_openai_grammar_tools=compat.get("supportsOpenAIGrammarTools", False),
+            )
         if options and options.temperature is not None:
             params["temperature"] = options.temperature
         if options and options.max_tokens is not None:
@@ -300,7 +379,10 @@ def _run_openai_stream(
         tool_blocks_by_id: dict[str, _ToolCallBlock] = {}
 
         def ensure_tool_block(
-            index: int | None, tool_id: str | None, func_name: str | None
+            index: int | None,
+            tool_id: str | None,
+            func_name: str | None,
+            custom_input_property: str | None = None,
         ) -> _ToolCallBlock:
             block = tool_blocks_by_index.get(index) if index is not None else None
             if block is None and tool_id:
@@ -308,7 +390,12 @@ def _run_openai_stream(
             if block is None:
                 # 新建：把 ToolCall 实例直接放进 content，记录其索引
                 cidx = len(output.content)
-                block = _ToolCallBlock(content_index=cidx, id=tool_id or "", name=func_name or "")
+                block = _ToolCallBlock(
+                    content_index=cidx,
+                    id=tool_id or "",
+                    name=func_name or "",
+                    custom_input_property=custom_input_property,
+                )
                 output.content.append(block.tool_call)
                 if index is not None:
                     block.stream_index = index
@@ -327,7 +414,12 @@ def _run_openai_stream(
             return block
 
         try:
-            stream_obj = await client.chat.completions.create(**params)
+            stream_obj = await retry_provider_request(
+                lambda: client.chat.completions.create(**params),
+                max_retries=(options.max_retries or 0) if options else 0,
+                max_retry_delay_ms=options.max_retry_delay_ms if options else None,
+                cancel_event=options.cancel_event if options else None,
+            )
             async for chunk in stream_obj:
                 # usage（chunk 级）
                 if chunk.usage:
@@ -395,13 +487,39 @@ def _run_openai_stream(
                         func = getattr(tc_delta, "function", None)
                         func_name = getattr(func, "name", None) if func else None
                         args_chunk = getattr(func, "arguments", None) if func else None
+                        custom = getattr(tc_delta, "custom", None)
+                        custom_name = getattr(custom, "name", None) if custom else None
+                        custom_chunk = getattr(custom, "input", None) if custom else None
+                        tool_name = func_name or custom_name
+                        custom_property = (
+                            grammar_tool_input_properties.get(tool_name or "")
+                            if custom is not None
+                            else None
+                        )
 
-                        block = ensure_tool_block(idx, tc_id, func_name)
+                        block = ensure_tool_block(
+                            idx, tc_id, tool_name, custom_input_property=custom_property
+                        )
                         delta_str = ""
                         if args_chunk:
                             block.partial_args += args_chunk
                             block.tool_call.arguments = _parse_streaming_json(block.partial_args)
                             delta_str = args_chunk
+                        elif custom_chunk and block.custom_input_property:
+                            current = block.tool_call.arguments[block.custom_input_property]
+                            next_input = str(current) + custom_chunk
+                            buffer = block.custom_input_buffer
+                            assert buffer is not None
+                            delta_str = (
+                                append_grammar_tool_input_json_delta(
+                                    buffer,
+                                    block.custom_input_property,
+                                    next_input,
+                                    close=False,
+                                )
+                                or ""
+                            )
+                            block.tool_call.arguments = {block.custom_input_property: next_input}
                         es.push(
                             ToolCallDeltaEvent(
                                 content_index=block.content_index,
@@ -428,6 +546,22 @@ def _run_openai_stream(
                     )
                 )
             for block in tool_blocks_by_index.values():
+                if block.custom_input_property and block.custom_input_buffer:
+                    input_value = str(block.tool_call.arguments[block.custom_input_property])
+                    closing_delta = append_grammar_tool_input_json_delta(
+                        block.custom_input_buffer,
+                        block.custom_input_property,
+                        input_value,
+                        close=True,
+                    )
+                    if closing_delta:
+                        es.push(
+                            ToolCallDeltaEvent(
+                                content_index=block.content_index,
+                                delta=closing_delta,
+                                partial=output,
+                            )
+                        )
                 es.push(
                     ToolCallEndEvent(
                         content_index=block.content_index,

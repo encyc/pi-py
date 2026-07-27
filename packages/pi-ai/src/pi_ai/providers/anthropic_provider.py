@@ -23,6 +23,7 @@ from typing import Any
 
 from anthropic import AsyncAnthropic
 
+from ..constrained_sampling import resolve_json_schema_strict_sampling
 from ..event_stream import EventStream
 from ..events import (
     AssistantMessageEvent,
@@ -39,6 +40,7 @@ from ..events import (
     ToolCallEndEvent,
     ToolCallStartEvent,
 )
+from ..provider_retry import retry_provider_request
 from ..types import (
     AssistantMessage,
     Context,
@@ -101,22 +103,27 @@ def _resolve_api_key() -> str:
 # ============================================================
 
 
-def _convert_tools(tools: list[Any]) -> list[dict[str, Any]]:
+def _convert_tools(
+    tools: list[Any], *, supports_strict_tools: bool = False
+) -> list[dict[str, Any]]:
     """ToolDef -> Anthropic tools 格式。input_schema 始终含 type/properties/required。"""
     out: list[dict[str, Any]] = []
     for tool in tools:
         schema = tool.to_json_schema() if hasattr(tool, "to_json_schema") else tool.parameters
-        out.append(
-            {
-                "name": tool.name,
-                "description": tool.description,
-                "input_schema": {
-                    "type": "object",
-                    "properties": schema.get("properties", {}),
-                    "required": schema.get("required", []),
-                },
-            }
-        )
+        strict = resolve_json_schema_strict_sampling(tool, supports_strict_tools)
+        legacy_schema = {
+            "type": "object",
+            "properties": schema.get("properties", {}),
+            "required": schema.get("required", []),
+        }
+        converted = {
+            "name": tool.name,
+            "description": tool.description,
+            "input_schema": {**schema, **legacy_schema} if strict else legacy_schema,
+        }
+        if strict:
+            converted["strict"] = True
+        out.append(converted)
     return out
 
 
@@ -397,7 +404,10 @@ def _run_anthropic_stream(
         if system:
             params["system"] = system
         if context.tools:
-            params["tools"] = _convert_tools(context.tools)
+            params["tools"] = _convert_tools(
+                context.tools,
+                supports_strict_tools=(model.compat or {}).get("supportsStrictTools", False),
+            )
         if options and options.temperature is not None:
             params["temperature"] = options.temperature
         if options and options.timeout_ms is not None:
@@ -414,7 +424,12 @@ def _run_anthropic_stream(
             return blocks.get(idx)
 
         try:
-            response = await client.messages.create(**params)
+            response = await retry_provider_request(
+                lambda: client.messages.create(**params),
+                max_retries=(options.max_retries or 0) if options else 0,
+                max_retry_delay_ms=options.max_retry_delay_ms if options else None,
+                cancel_event=options.cancel_event if options else None,
+            )
             # 遍历类型化流事件
             async for event in response:
                 etype = event.type

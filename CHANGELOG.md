@@ -6,6 +6,24 @@
 本项目在 `CHANGELOG.md` 中保留公共的、用户可见的变更记录。
 具体的提交记录参见 [GitHub Releases](https://github.com/earendil-works/pi-py/releases)。
 
+## 0.82.1 (2026-07-27)
+
+对齐上游 v0.82.1。
+
+### 新增
+
+- `Tool.constrainedSampling`：支持 strict JSON Schema 与 OpenAI Lark/regex grammar 工具。
+- OpenAI 与 Anthropic provider 请求级可取消重试，并遵循服务端 retry headers。
+
+### 修复
+
+- DNS `getaddrinfo`、`ENOTFOUND`、`EAI_AGAIN` 传输失败可触发 assistant 重试。
+- Compaction 摘要请求使用独立 routing session，并禁用 prompt-cache 写入。
+
+### 维护
+
+- 五个 Python 包统一升级到 0.82.1，内部依赖范围更新为 `<0.83`。
+
 ## 0.81.1 (2026-07-22) — 初始基线
 
 首次发布，对齐上游 v0.81.1。

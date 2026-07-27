@@ -199,6 +199,25 @@ def test_convert_tools_defaults():
     assert result[0]["input_schema"] == {"type": "object", "properties": {}, "required": []}
 
 
+def test_convert_tools_enables_strict_schema_for_capable_models():
+    tool = Tool(
+        name="f",
+        description="d",
+        parameters={
+            "type": "object",
+            "properties": {"value": {"type": "string"}},
+            "required": ["value"],
+            "additionalProperties": False,
+        },
+        constrained_sampling={"type": "json_schema", "strict": "require"},
+    )
+
+    result = _convert_tools([tool], supports_strict_tools=True)
+
+    assert result[0]["strict"] is True
+    assert result[0]["input_schema"]["additionalProperties"] is False
+
+
 # ============================================================
 # thinking 配置
 # ============================================================
