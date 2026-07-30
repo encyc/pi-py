@@ -359,9 +359,7 @@ async def test_openai_stream_preserves_function_when_custom_is_empty(monkeypatch
     )
 
     assert message.content[0].arguments == {"city": "Paris"}
-    argument_deltas = [
-        event.delta for event in events if isinstance(event, ToolCallDeltaEvent)
-    ]
+    argument_deltas = [event.delta for event in events if isinstance(event, ToolCallDeltaEvent)]
     assert argument_deltas == ['{"city":"Paris"}']
 
 
