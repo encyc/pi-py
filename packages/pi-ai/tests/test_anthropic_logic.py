@@ -5,11 +5,14 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from pi_ai import (
     AssistantMessage,
     Context,
     ImageContent,
     Model,
+    StreamOptions,
     TextContent,
     ThinkingContent,
     Tool,
@@ -17,6 +20,8 @@ from pi_ai import (
     ToolResultMessage,
     UserMessage,
 )
+from pi_ai.events import ErrorEvent, StartEvent
+from pi_ai.providers import anthropic_provider
 from pi_ai.providers.anthropic_provider import (
     _STOP_REASON_MAP,
     _build_thinking_config,
@@ -272,3 +277,90 @@ def test_stop_reason_mapping():
     assert _STOP_REASON_MAP["tool_use"] == "toolUse"
     assert _STOP_REASON_MAP["max_tokens"] == "length"
     assert _STOP_REASON_MAP["refusal"] == "error"
+
+
+class _AnthropicAsyncItems:
+    def __init__(self, items):
+        self._items = iter(items)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._items)
+        except StopIteration as exc:
+            raise StopAsyncIteration from exc
+
+
+def _fake_anthropic_client(events):
+    async def create(**kwargs):
+        return _AnthropicAsyncItems(events)
+
+    return SimpleNamespace(messages=SimpleNamespace(create=create))
+
+
+async def _collect_anthropic(monkeypatch, events):
+    monkeypatch.setattr(
+        anthropic_provider,
+        "_create_client",
+        lambda model, api_key, headers, http_client=None: _fake_anthropic_client(events),
+    )
+    event_stream = anthropic_provider._run_anthropic_stream(
+        _budget_model(),
+        Context(messages=[UserMessage(content="hi")]),
+        StreamOptions(api_key="test"),
+    )
+    seen = []
+    start_reasons = []
+    async for event in event_stream:
+        seen.append(event)
+        if isinstance(event, StartEvent):
+            start_reasons.append(event.partial.stop_reason)
+    return seen, start_reasons, await event_stream.result()
+
+
+async def test_anthropic_stream_starts_pending_and_preserves_raw_reason(monkeypatch):
+    events = [
+        SimpleNamespace(type="message_start", message=SimpleNamespace(id="m1", usage=None)),
+        SimpleNamespace(
+            type="message_delta",
+            delta=SimpleNamespace(stop_reason="end_turn"),
+            usage=None,
+        ),
+        SimpleNamespace(type="message_stop"),
+    ]
+
+    seen, start_reasons, message = await _collect_anthropic(monkeypatch, events)
+
+    assert start_reasons == ["pending"]
+    assert message.stop_reason == "stop"
+    assert message.raw_stop_reason == "end_turn"
+    assert not any(isinstance(event, ErrorEvent) for event in seen)
+
+
+async def test_anthropic_stream_rejects_missing_stop_reason(monkeypatch):
+    events = [
+        SimpleNamespace(type="message_start", message=SimpleNamespace(id="m1", usage=None)),
+        SimpleNamespace(type="message_stop"),
+    ]
+
+    seen, _, message = await _collect_anthropic(monkeypatch, events)
+
+    assert isinstance(seen[-1], ErrorEvent)
+    assert message.stop_reason == "error"
+    assert "without a stop reason" in (message.error_message or "")
+
+
+def test_anthropic_client_receives_injected_http_client(monkeypatch):
+    captured = {}
+    sentinel = object()
+
+    def fake_async_anthropic(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(anthropic_provider, "AsyncAnthropic", fake_async_anthropic)
+    anthropic_provider._create_client(_budget_model(), "key", None, sentinel)
+
+    assert captured["http_client"] is sentinel

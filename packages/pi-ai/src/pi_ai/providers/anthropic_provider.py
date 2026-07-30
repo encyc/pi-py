@@ -72,7 +72,10 @@ _STOP_REASON_MAP: dict[str, str] = {
 
 
 def _create_client(
-    model: Model, api_key: str, options_headers: dict[str, str | None] | None
+    model: Model,
+    api_key: str,
+    options_headers: dict[str, str | None] | None,
+    http_client: Any = None,
 ) -> AsyncAnthropic:
     headers: dict[str, str] = dict(model.headers or {})
     if options_headers:
@@ -84,6 +87,7 @@ def _create_client(
         base_url=model.base_url,
         default_headers=headers or None,
         max_retries=0,
+        http_client=http_client,
     )
 
 
@@ -387,9 +391,15 @@ def _run_anthropic_stream(
             api=model.api,
             provider=model.provider,
             model=model.id,
+            stop_reason="pending",
             timestamp=int(time.time() * 1000),
         )
-        client = _create_client(model, api_key, options.headers if options else None)
+        client = _create_client(
+            model,
+            api_key,
+            options.headers if options else None,
+            options.http_client if options else None,
+        )
 
         messages, system = _convert_messages(context)
         params: dict[str, Any] = {
@@ -441,7 +451,7 @@ def _run_anthropic_stream(
                         usage_obj = getattr(msg_obj, "usage", None)
                         if usage_obj is not None:
                             output.usage = _update_usage_from_start(usage_obj, model)
-                    es.push(StartEvent(partial=output))
+                    es.push(StartEvent(partial=output.model_copy(deep=True)))
 
                 elif etype == "content_block_start":
                     cb = getattr(event, "content_block", None)
@@ -555,10 +565,11 @@ def _run_anthropic_stream(
                     if delta is not None:
                         stop_reason = getattr(delta, "stop_reason", None)
                         if stop_reason:
+                            output.raw_stop_reason = stop_reason
                             mapped = _STOP_REASON_MAP.get(stop_reason, "error")
                             output.stop_reason = mapped  # type: ignore[assignment]
                             if mapped == "error":
-                                output.error_message = f"stop_reason: {stop_reason}"
+                                output.error_message = f"Unhandled stop_reason: {stop_reason}"
                     if usage_delta is not None:
                         _update_usage_from_delta(output.usage, usage_delta, model)
 
@@ -566,6 +577,8 @@ def _run_anthropic_stream(
                     pass  # 流结束，在循环外终止
 
             # 终止判定
+            if output.stop_reason == "pending":
+                raise RuntimeError("Anthropic stream ended without a stop reason")
             if output.stop_reason == "aborted":
                 raise RuntimeError("Request was aborted")
             if output.stop_reason == "error":
