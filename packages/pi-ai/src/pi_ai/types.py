@@ -95,7 +95,7 @@ Transport = Literal["sse", "websocket", "websocket-cached", "auto"]
 SessionAffinityFormat = Literal["openai", "openai-nosession", "openrouter"]
 
 #: 停止原因。对应上游 ``StopReason``。
-StopReason = Literal["stop", "length", "toolUse", "error", "aborted"]
+StopReason = Literal["pending", "stop", "length", "toolUse", "error", "aborted"]
 
 
 # ============================================================
@@ -237,8 +237,9 @@ class AssistantMessage(BaseModel):
     response_id: str | None = Field(default=None, alias="responseId")
     diagnostics: list[dict[str, Any]] | None = None
     usage: Usage = Field(default_factory=Usage)
-    stop_reason: StopReason = Field(default="stop", alias="stopReason")
+    stop_reason: StopReason = Field(default="pending", alias="stopReason")
     error_message: str | None = Field(default=None, alias="errorMessage")
+    raw_stop_reason: str | None = Field(default=None, alias="rawStopReason")
     timestamp: int = 0
 
 
@@ -368,6 +369,7 @@ class StreamOptions(BaseModel):
     temperature: float | None = None
     max_tokens: int | None = Field(default=None, alias="maxTokens")
     api_key: str | None = Field(default=None, alias="apiKey")
+    http_client: Any = Field(default=None, alias="httpClient", exclude=True)
     transport: Transport | None = None
     cache_retention: CacheRetention | None = Field(default=None, alias="cacheRetention")
     session_id: str | None = Field(default=None, alias="sessionId")
