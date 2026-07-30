@@ -1,6 +1,6 @@
 [project]
 name = "pi-ai"
-version = "0.82.1"
+version = "0.83.0"
 description = "Python port of @earendil-works/pi-ai — Unified LLM API with multi-provider streaming"
 readme = "README.md"
 license = { text = "MIT" }

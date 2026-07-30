@@ -7,8 +7,8 @@
 
 from __future__ import annotations
 
-__version__ = "0.82.1"
-__upstream_ref__ = "earendil-works/pi@v0.82.1"
+__version__ = "0.83.0"
+__upstream_ref__ = "earendil-works/pi@v0.83.0"
 
 from .database import SqliteDatabase, SqliteRunResult, apply_migrations, open_database
 from .storage import SqliteSessionRepo, SqliteSessionStorage

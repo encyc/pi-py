@@ -1,6 +1,6 @@
 # pi-server 移植注记
 
-对应上游：[`@earendil-works/pi-server`](https://github.com/earendil-works/pi/tree/main/packages/server)（v0.82.1）
+对应上游：[`@earendil-works/pi-server`](https://github.com/earendil-works/pi/tree/main/packages/server)（v0.83.0）
 
 ## 有意偏离上游
 
@@ -14,6 +14,11 @@
 ## cherry-pick
 
 （暂无）
+
+## v0.83.0 同步说明
+
+- 上游 server 包在本轮没有落入当前 Python RPC/supervisor 范围的行为变更。
+- 本包仅同步版本、上游引用和内部依赖约束。
 
 ## 待办
 

@@ -1,6 +1,6 @@
 # pi-ai 移植注记
 
-对应上游：[`@earendil-works/pi-ai`](https://github.com/earendil-works/pi/tree/main/packages/ai)（v0.82.1）
+对应上游：[`@earendil-works/pi-ai`](https://github.com/earendil-works/pi/tree/main/packages/ai)（v0.83.0）
 
 ## 进度
 
@@ -47,6 +47,18 @@
 ## cherry-pick
 
 （暂无）
+
+## v0.83.0 同步说明
+
+- `AssistantMessage.stopReason` 增加 `pending` 中间状态，并保留 provider
+  原始终止原因为 `rawStopReason`。
+- OpenAI/Anthropic 流缺失或返回未知终止原因时以 provider error 结束，
+  不再误判为成功。
+- 上游按请求注入 `fetch` 的能力映射为 Python SDK 原生的
+  `StreamOptions.http_client`（序列化别名 `httpClient`）。
+- 修复 OpenAI-compatible delta 同时含有效 `function` 与空 `custom`
+  时生成重复工具参数增量的问题。
+- TypeBox、OAuth、图片 API、新 provider 和动态模型目录仍属于既有裁剪范围。
 
 ## v0.82.1 同步说明
 

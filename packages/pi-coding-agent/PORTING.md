@@ -1,6 +1,6 @@
 # pi-coding-agent 移植注记
 
-对应上游：[`@earendil-works/pi-coding-agent`](https://github.com/earendil-works/pi/tree/main/packages/coding-agent)（v0.82.1）
+对应上游：[`@earendil-works/pi-coding-agent`](https://github.com/earendil-works/pi/tree/main/packages/coding-agent)（v0.83.0）
 
 ## 有意偏离上游（重要：本包大幅裁剪）
 
@@ -21,6 +21,12 @@
 ## cherry-pick
 
 （暂无）
+
+## v0.83.0 同步说明
+
+- 上游 v0.83.0 的凭证导出、OAuth、扩展上下文和交互模式修复均位于本包
+  明确裁剪的 CLI/TUI/扩展范围。
+- 本包仅同步版本、上游引用和内部依赖约束。
 
 ## 待办
 

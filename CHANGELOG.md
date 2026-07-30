@@ -6,6 +6,26 @@
 本项目在 `CHANGELOG.md` 中保留公共的、用户可见的变更记录。
 具体的提交记录参见 [GitHub Releases](https://github.com/earendil-works/pi-py/releases)。
 
+## 0.83.0 (2026-07-30)
+
+对齐上游 v0.83.0。
+
+### 新增
+
+- 流式消息增加 `pending` 中间状态和 `rawStopReason` 原始终止原因。
+- OpenAI/Anthropic provider 支持按请求注入异步 HTTP client。
+
+### 修复
+
+- 缺失或未知 provider 终止原因不再被误判为成功。
+- 修复 OpenAI-compatible 工具增量同时含有效 `function` 和空 `custom`
+  时丢失参数的问题。
+
+### 维护
+
+- 五个 Python 包统一升级到 0.83.0，内部依赖范围更新为 `<0.84`。
+- OAuth、CLI/TUI、扩展系统、TypeBox 和未支持 provider 继续保持裁剪。
+
 ## 0.82.1 (2026-07-27)
 
 对齐上游 v0.82.1。

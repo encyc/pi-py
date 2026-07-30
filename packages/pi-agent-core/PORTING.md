@@ -1,6 +1,6 @@
 # pi-agent-core 移植注记
 
-对应上游：[`@earendil-works/pi-agent-core`](https://github.com/earendil-works/pi/tree/main/packages/agent)（v0.82.1）
+对应上游：[`@earendil-works/pi-agent-core`](https://github.com/earendil-works/pi/tree/main/packages/agent)（v0.83.0）
 
 ## 有意偏离上游
 
@@ -14,6 +14,11 @@
 ## cherry-pick
 
 （暂无）
+
+## v0.83.0 同步说明
+
+- 上游 agent 包在本轮没有落入当前精简 Python runtime 的行为变更。
+- 本包仅同步版本、上游引用和对 `pi-ai>=0.83.0,<0.84` 的依赖约束。
 
 ## v0.82.1 同步说明
 
