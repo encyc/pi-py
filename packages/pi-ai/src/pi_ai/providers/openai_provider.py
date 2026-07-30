@@ -36,6 +36,7 @@ from ..events import (
     AssistantMessageEvent,
     DoneEvent,
     ErrorEvent,
+    StartEvent,
     TextDeltaEvent,
     TextEndEvent,
     TextStartEvent,
@@ -176,7 +177,10 @@ def _apply_cost(usage: Usage, model: Model) -> None:
 
 
 def _create_client(
-    model: Model, api_key: str, options_headers: dict[str, str | None] | None
+    model: Model,
+    api_key: str,
+    options_headers: dict[str, str | None] | None,
+    http_client: Any = None,
 ) -> AsyncOpenAI:
     headers: dict[str, Any] = dict(model.headers or {})
     if options_headers:
@@ -186,6 +190,7 @@ def _create_client(
         base_url=model.base_url,
         default_headers=headers or None,
         max_retries=0,
+        http_client=http_client,
     )
 
 
@@ -338,9 +343,16 @@ def _run_openai_stream(
             api=model.api,
             provider=model.provider,
             model=model.id,
+            stop_reason="pending",
             timestamp=int(time.time() * 1000),
         )
-        client = _create_client(model, api_key, options.headers if options else None)
+        es.push(StartEvent(partial=output.model_copy(deep=True)))
+        client = _create_client(
+            model,
+            api_key,
+            options.headers if options else None,
+            options.http_client if options else None,
+        )
 
         # 构建请求参数
         compat = model.compat or {}
@@ -432,10 +444,11 @@ def _run_openai_stream(
 
                 # finish_reason
                 if choice.finish_reason:
+                    output.raw_stop_reason = choice.finish_reason
                     mapped: StopReason = _STOP_REASON_MAP.get(choice.finish_reason, "error")
                     output.stop_reason = mapped
                     if mapped == "error":
-                        output.error_message = f"finish_reason: {choice.finish_reason}"
+                        output.error_message = f"Unhandled finish_reason: {choice.finish_reason}"
                     has_finish_reason = True
 
                 # 文本增量（单槽位）
@@ -493,7 +506,7 @@ def _run_openai_stream(
                         tool_name = func_name or custom_name
                         custom_property = (
                             grammar_tool_input_properties.get(tool_name or "")
-                            if custom is not None
+                            if custom is not None and func is None
                             else None
                         )
 
@@ -505,7 +518,7 @@ def _run_openai_stream(
                             block.partial_args += args_chunk
                             block.tool_call.arguments = _parse_streaming_json(block.partial_args)
                             delta_str = args_chunk
-                        elif custom_chunk and block.custom_input_property:
+                        elif custom_chunk and func is None and block.custom_input_property:
                             current = block.tool_call.arguments[block.custom_input_property]
                             next_input = str(current) + custom_chunk
                             buffer = block.custom_input_buffer
@@ -571,7 +584,7 @@ def _run_openai_stream(
                 )
 
             # 终止判定（finish_reason 缺失 = 异常，与上游一致）
-            if not has_finish_reason:
+            if not has_finish_reason or output.stop_reason == "pending":
                 raise RuntimeError("Stream ended without finish_reason")
             if output.stop_reason == "aborted":
                 raise RuntimeError("Request was aborted")

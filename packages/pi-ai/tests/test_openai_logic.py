@@ -5,9 +5,22 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
-from pi_ai import AssistantMessage, Context, Model, ModelCost, Tool, ToolCall
+from pi_ai import (
+    AssistantMessage,
+    Context,
+    Model,
+    ModelCost,
+    StreamOptions,
+    Tool,
+    ToolCall,
+    UserMessage,
+)
+from pi_ai.events import ErrorEvent, StartEvent, ToolCallDeltaEvent
+from pi_ai.providers import openai_provider
 from pi_ai.providers.openai_provider import (
     _STOP_REASON_MAP,
     _convert_messages,
@@ -238,3 +251,129 @@ def test_convert_messages_replays_grammar_tool_as_custom_call():
             "custom": {"name": "sql", "input": "SELECT 1"},
         }
     ]
+
+
+class _AsyncItems:
+    def __init__(self, items):
+        self._items = iter(items)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._items)
+        except StopIteration as exc:
+            raise StopAsyncIteration from exc
+
+
+def _chunk(*, finish_reason=None, delta=None):
+    delta = delta or SimpleNamespace(content=None, tool_calls=None)
+    choice = SimpleNamespace(finish_reason=finish_reason, delta=delta)
+    return SimpleNamespace(usage=None, choices=[choice])
+
+
+def _fake_openai_client(chunks):
+    async def create(**kwargs):
+        return _AsyncItems(chunks)
+
+    completions = SimpleNamespace(create=create)
+    return SimpleNamespace(chat=SimpleNamespace(completions=completions))
+
+
+async def _collect_openai(monkeypatch, chunks, *, model=None, context=None, options=None):
+    monkeypatch.setattr(
+        openai_provider,
+        "_create_client",
+        lambda model, api_key, headers, http_client=None: _fake_openai_client(chunks),
+    )
+    event_stream = openai_provider._run_openai_stream(
+        model or _make_model(),
+        context or Context(messages=[UserMessage(content="hi")]),
+        options or StreamOptions(api_key="test"),
+    )
+    start_reasons = []
+    events = []
+    async for event in event_stream:
+        events.append(event)
+        if isinstance(event, StartEvent):
+            start_reasons.append(event.partial.stop_reason)
+    return events, start_reasons, await event_stream.result()
+
+
+async def test_openai_stream_starts_pending_and_preserves_raw_reason(monkeypatch):
+    events, start_reasons, message = await _collect_openai(
+        monkeypatch, [_chunk(finish_reason="stop")]
+    )
+
+    assert start_reasons == ["pending"]
+    assert message.stop_reason == "stop"
+    assert message.raw_stop_reason == "stop"
+    assert not any(isinstance(event, ErrorEvent) for event in events)
+
+
+async def test_openai_stream_rejects_missing_finish_reason(monkeypatch):
+    events, _, message = await _collect_openai(monkeypatch, [_chunk()])
+
+    assert isinstance(events[-1], ErrorEvent)
+    assert message.stop_reason == "error"
+    assert "without finish_reason" in (message.error_message or "")
+
+
+async def test_openai_stream_preserves_function_when_custom_is_empty(monkeypatch):
+    function = SimpleNamespace(name="get_weather", arguments='{"city":"Paris"}')
+    custom = SimpleNamespace(name=None, input=None)
+    tool_delta = SimpleNamespace(
+        index=0,
+        id="call-1",
+        function=function,
+        custom=custom,
+    )
+    delta = SimpleNamespace(content=None, tool_calls=[tool_delta])
+    context = Context(
+        messages=[UserMessage(content="weather")],
+        tools=[
+            Tool(
+                name="get_weather",
+                description="weather",
+                parameters={
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+                constrained_sampling={
+                    "type": "grammar",
+                    "variants": {"openai_regex": ".*"},
+                },
+            )
+        ],
+    )
+    model = _make_model()
+    model.compat = {"supportsOpenAIGrammarTools": True}
+
+    events, _, message = await _collect_openai(
+        monkeypatch,
+        [_chunk(delta=delta), _chunk(finish_reason="tool_calls")],
+        model=model,
+        context=context,
+    )
+
+    assert message.content[0].arguments == {"city": "Paris"}
+    argument_deltas = [
+        event.delta for event in events if isinstance(event, ToolCallDeltaEvent)
+    ]
+    assert argument_deltas == ['{"city":"Paris"}']
+
+
+def test_openai_client_receives_injected_http_client(monkeypatch):
+    captured = {}
+    sentinel = object()
+
+    def fake_async_openai(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(openai_provider, "AsyncOpenAI", fake_async_openai)
+    openai_provider._create_client(_make_model(), "key", None, sentinel)
+
+    assert captured["http_client"] is sentinel
