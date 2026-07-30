@@ -1,8 +1,9 @@
 """真实 LLM 调用集成测试。
 
 默认跳过，仅当设置了对应环境变量时运行：
-    OPENAI_API_KEY    → OpenAI 测试
-    DEEPSEEK_API_KEY  → DeepSeek 测试（OpenAI 兼容协议）
+    OPENAI_API_KEY         → OpenAI 测试
+    DEEPSEEK_API_KEY       → DeepSeek 测试（OpenAI 兼容协议）
+    OPENCODE_ZEN_API_KEY   → OpenCode Zen 测试（OpenAI 兼容协议）
 
 手动运行：
     uv run pytest packages/pi-ai/tests/test_integration.py -m integration -v -s
@@ -37,6 +38,7 @@ pytestmark = pytest.mark.integration
 
 OPENAI_AVAILABLE = bool(os.environ.get("OPENAI_API_KEY"))
 DEEPSEEK_AVAILABLE = bool(os.environ.get("DEEPSEEK_API_KEY"))
+OPENCODE_ZEN_AVAILABLE = bool(os.environ.get("OPENCODE_ZEN_API_KEY"))
 
 
 # ============================================================
@@ -61,6 +63,8 @@ async def test_openai_text_streaming():
 
     msg = await es.result()
     assert msg.stop_reason == "stop", f"stop_reason={msg.stop_reason}, err={msg.error_message}"
+    assert msg.raw_stop_reason is not None
+    assert msg.stop_reason != "pending"
     full = "".join(deltas)
     assert len(full) > 0, "未收到任何文本增量"
     # final message 的 content 应与增量累加一致
@@ -194,8 +198,84 @@ async def test_deepseek_tool_calling():
 
     msg = await es.result()
     assert msg.stop_reason == "toolUse", f"stop_reason={msg.stop_reason}, err={msg.error_message}"
+    assert msg.raw_stop_reason is not None
+    assert msg.stop_reason != "pending"
     assert len(tool_calls_seen) >= 1
     tc = tool_calls_seen[0]
     assert tc.name == "get_time"
     assert "city" in tc.arguments
     print(f"\n[DeepSeek] 工具调用: {tc.name}({tc.arguments})")
+
+
+# ============================================================
+# OpenCode Zen（OpenAI 兼容协议）
+# ============================================================
+
+
+def _opencode_zen_model():
+    """构造 OpenCode Zen 的 OpenAI-compatible 模型。"""
+    from pi_ai import Model
+
+    return Model(
+        id=os.environ.get("OPENCODE_ZEN_MODEL", "deepseek-v4-flash-free"),
+        name="OpenCode Zen",
+        api="openai-completions",
+        provider="opencode-zen",
+        base_url="https://opencode.ai/zen/v1",
+        reasoning=False,
+        input=["text"],
+        context_window=128000,
+        max_tokens=4096,
+    )
+
+
+@pytest.mark.skipif(not OPENCODE_ZEN_AVAILABLE, reason="未设置 OPENCODE_ZEN_API_KEY")
+async def test_opencode_zen_text_streaming():
+    model = _opencode_zen_model()
+    options = StreamOptions(
+        api_key=os.environ["OPENCODE_ZEN_API_KEY"],
+        max_tokens=80,
+    )
+    msg = await complete(
+        model,
+        Context(messages=[UserMessage(content="Reply with exactly: zen-ok")]),
+        options,
+    )
+
+    assert msg.stop_reason == "stop", msg.error_message
+    assert msg.raw_stop_reason is not None
+    assert msg.content
+
+
+@pytest.mark.skipif(not OPENCODE_ZEN_AVAILABLE, reason="未设置 OPENCODE_ZEN_API_KEY")
+async def test_opencode_zen_tool_calling():
+    model = _opencode_zen_model()
+    context = Context(
+        messages=[UserMessage(content="Use get_time for Shanghai. Do not answer directly.")],
+        tools=[
+            Tool(
+                name="get_time",
+                description="Get the local time for a city",
+                parameters={
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            )
+        ],
+    )
+    msg = await complete(
+        model,
+        context,
+        StreamOptions(
+            api_key=os.environ["OPENCODE_ZEN_API_KEY"],
+            max_tokens=160,
+        ),
+    )
+
+    assert msg.stop_reason == "toolUse", msg.error_message
+    assert msg.raw_stop_reason is not None
+    tool_calls = [block for block in msg.content if block.type == "toolCall"]
+    assert tool_calls
+    assert tool_calls[0].name == "get_time"
+    assert "city" in tool_calls[0].arguments

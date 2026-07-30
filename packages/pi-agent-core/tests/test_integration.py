@@ -124,6 +124,8 @@ async def test_agent_loop_with_real_tool_call():
     final_assistants = [m for m in messages if isinstance(m, AssistantMessage)]
     last = final_assistants[-1]
     assert last.stop_reason == "stop"
+    assert last.raw_stop_reason is not None
+    assert last.stop_reason != "pending"
     print(f"[agent-loop] 最终回复: {last.content[0].text if last.content else '(空)'}")
 
 
