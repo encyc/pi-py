@@ -99,3 +99,28 @@ async def test_event_replay(faux_model, ctx):
     es = stream(faux_model, ctx)
     await _collect(es)
     assert len(es.events) == 6  # start + text_start + 2*delta + text_end + done
+    assert es.events[0].partial.stop_reason == "pending"
+
+
+async def test_faux_start_event_is_pending(faux_model, ctx):
+    push_script(FauxScript(text="ok"))
+    es = stream(faux_model, ctx)
+    start_reasons = []
+
+    async for event in es:
+        if event.type == "start":
+            start_reasons.append(event.partial.stop_reason)
+
+    assert start_reasons == ["pending"]
+    assert (await es.result()).stop_reason == "stop"
+
+
+async def test_faux_rejects_pending_as_final_reason(faux_model, ctx):
+    push_script(FauxScript(text="unfinished", stop_reason="pending"))
+    es = stream(faux_model, ctx)
+    events = await _collect(es)
+    result = await es.result()
+
+    assert events[-1].type == "error"
+    assert result.stop_reason == "error"
+    assert "without a stop reason" in (result.error_message or "")

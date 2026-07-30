@@ -14,6 +14,7 @@ from ..event_stream import EventStream
 from ..events import (
     AssistantMessageEvent,
     DoneEvent,
+    ErrorEvent,
     StartEvent,
     TextDeltaEvent,
     TextEndEvent,
@@ -26,6 +27,7 @@ from ..types import (
     Context,
     Model,
     SimpleStreamOptions,
+    StopReason,
     StreamOptions,
     ToolCall,
     Usage,
@@ -47,11 +49,13 @@ class FauxScript:
         tool_calls: list[ToolCall] | None = None,
         error: str | None = None,
         usage: Usage | None = None,
+        stop_reason: StopReason | None = None,
     ) -> None:
         self.text = text
         self.tool_calls = tool_calls or []
         self.error = error
         self.usage = usage
+        self.stop_reason = stop_reason
 
 
 #: 全局脚本栈。测试 push 一个脚本，provider 取栈顶（或最后一个）。
@@ -88,6 +92,7 @@ def _run_faux(
             provider=model.provider,
             model=model.id,
             usage=script.usage or Usage(),
+            stop_reason="pending",
             timestamp=int(time.time() * 1000),
         )
 
@@ -95,13 +100,11 @@ def _run_faux(
         if script.error is not None:
             output.stop_reason = "error"
             output.error_message = script.error
-            from ..events import ErrorEvent as _ErrEv
-
-            es.push(_ErrEv(reason="error", error=output))
+            es.push(ErrorEvent(reason="error", error=output))
             es.end(output)
             return
 
-        es.push(StartEvent(partial=output))
+        es.push(StartEvent(partial=output.model_copy(deep=True)))
 
         content_index = 0
         # 文本块
@@ -127,10 +130,16 @@ def _run_faux(
             content_index += 1
 
         # 终止
-        if script.tool_calls:
-            output.stop_reason = "toolUse"
-        else:
-            output.stop_reason = "stop"
+        final_reason: StopReason = script.stop_reason or (
+            "toolUse" if script.tool_calls else "stop"
+        )
+        if final_reason == "pending":
+            output.stop_reason = "error"
+            output.error_message = "Faux response ended without a stop reason"
+            es.push(ErrorEvent(reason="error", error=output))
+            es.end(output)
+            return
+        output.stop_reason = final_reason
         es.push(DoneEvent(reason=output.stop_reason, message=output))
         es.end(output)
 
