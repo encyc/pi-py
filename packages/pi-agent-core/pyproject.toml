@@ -1,5 +1,5 @@
 [project]
-name = "pi-agent-core"
+name = "pi-py-agent-core"
 version = "0.83.0"
 description = "Python port of @earendil-works/pi-agent-core — General-purpose agent runtime"
 readme = "README.md"
@@ -7,7 +7,7 @@ license = { text = "MIT" }
 requires-python = ">=3.11"
 authors = [{ name = "Justin Gao" }]
 dependencies = [
-    "pi-ai>=0.83.0,<0.84",
+    "pi-py-ai>=0.83.0,<0.84",
     "pydantic>=2.7",
     "pyyaml>=6",
 ]

@@ -11,11 +11,11 @@ private = true
 # 把所有 workspace 成员列为依赖, 使 uv sync 以 editable 方式安装全部包,
 # 便于在根目录直接跑 pytest / ruff / mypy 覆盖所有子包
 dependencies = [
-    "pi-ai",
-    "pi-agent-core",
-    "pi-storage-sqlite",
-    "pi-coding-agent",
-    "pi-server",
+    "pi-py-ai",
+    "pi-py-agent-core",
+    "pi-py-storage-sqlite",
+    "pi-py-coding-agent",
+    "pi-py-server",
 ]
 
 # ---- 开发依赖(质量工具 + 测试), 所有子包共享 ----
@@ -36,11 +36,11 @@ members = ["packages/*"]
 
 [tool.uv.sources]
 # 包间依赖走 workspace, 而非从 PyPI 解析
-pi-ai = { workspace = true }
-pi-agent-core = { workspace = true }
-pi-storage-sqlite = { workspace = true }
-pi-coding-agent = { workspace = true }
-pi-server = { workspace = true }
+pi-py-ai = { workspace = true }
+pi-py-agent-core = { workspace = true }
+pi-py-storage-sqlite = { workspace = true }
+pi-py-coding-agent = { workspace = true }
+pi-py-server = { workspace = true }
 
 # ============================================
 # 共享质量工具配置

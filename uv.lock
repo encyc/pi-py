@@ -8,12 +8,12 @@ resolution-markers = [
 
 [manifest]
 members = [
-    "pi-agent-core",
-    "pi-ai",
-    "pi-coding-agent",
     "pi-py",
-    "pi-server",
-    "pi-storage-sqlite",
+    "pi-py-agent-core",
+    "pi-py-ai",
+    "pi-py-coding-agent",
+    "pi-py-server",
+    "pi-py-storage-sqlite",
 ]
 
 [[package]]
@@ -592,24 +592,67 @@ wheels = [
 ]
 
 [[package]]
-name = "pi-agent-core"
+name = "pi-py"
+version = "0.0.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "pi-py-agent-core" },
+    { name = "pi-py-ai" },
+    { name = "pi-py-coding-agent" },
+    { name = "pi-py-server" },
+    { name = "pi-py-storage-sqlite" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "mypy" },
+    { name = "pre-commit" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+    { name = "types-pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pi-py-agent-core", editable = "packages/pi-agent-core" },
+    { name = "pi-py-ai", editable = "packages/pi-ai" },
+    { name = "pi-py-coding-agent", editable = "packages/pi-coding-agent" },
+    { name = "pi-py-server", editable = "packages/pi-server" },
+    { name = "pi-py-storage-sqlite", editable = "packages/pi-storage-sqlite" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mypy", specifier = ">=1.11" },
+    { name = "pre-commit", specifier = ">=3.8" },
+    { name = "pytest", specifier = ">=8" },
+    { name = "pytest-asyncio", specifier = ">=0.24" },
+    { name = "pytest-cov", specifier = ">=5" },
+    { name = "ruff", specifier = ">=0.6" },
+    { name = "types-pyyaml", specifier = ">=6" },
+]
+
+[[package]]
+name = "pi-py-agent-core"
 version = "0.83.0"
 source = { editable = "packages/pi-agent-core" }
 dependencies = [
-    { name = "pi-ai" },
+    { name = "pi-py-ai" },
     { name = "pydantic" },
     { name = "pyyaml" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "pi-ai", editable = "packages/pi-ai" },
+    { name = "pi-py-ai", editable = "packages/pi-ai" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pyyaml", specifier = ">=6" },
 ]
 
 [[package]]
-name = "pi-ai"
+name = "pi-py-ai"
 version = "0.83.0"
 source = { editable = "packages/pi-ai" }
 dependencies = [
@@ -630,91 +673,48 @@ requires-dist = [
 ]
 
 [[package]]
-name = "pi-coding-agent"
+name = "pi-py-coding-agent"
 version = "0.83.0"
 source = { editable = "packages/pi-coding-agent" }
 dependencies = [
-    { name = "pi-agent-core" },
-    { name = "pi-ai" },
+    { name = "pi-py-agent-core" },
+    { name = "pi-py-ai" },
     { name = "pydantic" },
     { name = "pyyaml" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "pi-agent-core", editable = "packages/pi-agent-core" },
-    { name = "pi-ai", editable = "packages/pi-ai" },
+    { name = "pi-py-agent-core", editable = "packages/pi-agent-core" },
+    { name = "pi-py-ai", editable = "packages/pi-ai" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pyyaml", specifier = ">=6" },
 ]
 
 [[package]]
-name = "pi-py"
-version = "0.0.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "pi-agent-core" },
-    { name = "pi-ai" },
-    { name = "pi-coding-agent" },
-    { name = "pi-server" },
-    { name = "pi-storage-sqlite" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "mypy" },
-    { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-    { name = "types-pyyaml" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "pi-agent-core", editable = "packages/pi-agent-core" },
-    { name = "pi-ai", editable = "packages/pi-ai" },
-    { name = "pi-coding-agent", editable = "packages/pi-coding-agent" },
-    { name = "pi-server", editable = "packages/pi-server" },
-    { name = "pi-storage-sqlite", editable = "packages/pi-storage-sqlite" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "mypy", specifier = ">=1.11" },
-    { name = "pre-commit", specifier = ">=3.8" },
-    { name = "pytest", specifier = ">=8" },
-    { name = "pytest-asyncio", specifier = ">=0.24" },
-    { name = "pytest-cov", specifier = ">=5" },
-    { name = "ruff", specifier = ">=0.6" },
-    { name = "types-pyyaml", specifier = ">=6" },
-]
-
-[[package]]
-name = "pi-server"
+name = "pi-py-server"
 version = "0.83.0"
 source = { editable = "packages/pi-server" }
 dependencies = [
-    { name = "pi-coding-agent" },
+    { name = "pi-py-coding-agent" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pi-coding-agent", editable = "packages/pi-coding-agent" }]
+requires-dist = [{ name = "pi-py-coding-agent", editable = "packages/pi-coding-agent" }]
 
 [[package]]
-name = "pi-storage-sqlite"
+name = "pi-py-storage-sqlite"
 version = "0.83.0"
 source = { editable = "packages/pi-storage-sqlite" }
 dependencies = [
-    { name = "pi-agent-core" },
-    { name = "pi-ai" },
+    { name = "pi-py-agent-core" },
+    { name = "pi-py-ai" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "pi-agent-core", editable = "packages/pi-agent-core" },
-    { name = "pi-ai", editable = "packages/pi-ai" },
+    { name = "pi-py-agent-core", editable = "packages/pi-agent-core" },
+    { name = "pi-py-ai", editable = "packages/pi-ai" },
 ]
 
 [[package]]

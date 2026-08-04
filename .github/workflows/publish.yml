@@ -22,11 +22,11 @@ jobs:
 
       - name: Build all packages
         run: |
-          uv build --package pi-ai
-          uv build --package pi-agent-core
-          uv build --package pi-storage-sqlite
-          uv build --package pi-coding-agent
-          uv build --package pi-server
+          uv build --package pi-py-ai
+          uv build --package pi-py-agent-core
+          uv build --package pi-py-storage-sqlite
+          uv build --package pi-py-coding-agent
+          uv build --package pi-py-server
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
