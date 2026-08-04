@@ -30,6 +30,8 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        # skip-existing: 跳过 PyPI 上已存在的同名文件，便于失败重试时
+        # 只补传缺失的包（如 PyPI 对短时间创建多个新项目的限流 429）。
         # 两种认证方式，任选其一：
         #
         # 方式 A — OIDC Trusted Publishing（推荐，无需 token）
@@ -43,3 +45,4 @@ jobs:
         #   保留下面这行即可
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
+          skip-existing: true
