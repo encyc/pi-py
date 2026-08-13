@@ -375,3 +375,169 @@ def test_openai_client_receives_injected_http_client(monkeypatch):
     openai_provider._create_client(_make_model(), "key", None, sentinel)
 
     assert captured["http_client"] is sentinel
+
+
+# ============================================================
+# v0.84.1: supportsFinishReason / samplingParams / thinking_token_budget
+# ============================================================
+
+
+def _capturing_openai_client(chunks, capture):
+    """假 OpenAI client，捕获 create() 的请求参数。"""
+
+    async def create(**kwargs):
+        capture.update(kwargs)
+        return _AsyncItems(chunks)
+
+    completions = SimpleNamespace(create=create)
+    return SimpleNamespace(chat=SimpleNamespace(completions=completions))
+
+
+async def test_openai_stream_infers_stop_when_finish_reason_unsupported(monkeypatch):
+    """compat.supportsFinishReason=False 的端点不发 finish_reason：流结束时推断 stop。"""
+    model = _make_model()
+    model.compat = {"supportsFinishReason": False}
+
+    events, _, message = await _collect_openai(
+        monkeypatch, [_chunk(delta=SimpleNamespace(content="hi", tool_calls=None))], model=model
+    )
+
+    assert message.stop_reason == "stop"
+    assert not any(isinstance(event, ErrorEvent) for event in events)
+
+
+async def test_openai_stream_infers_tooluse_when_finish_reason_unsupported(monkeypatch):
+    """supportsFinishReason=False 且含工具调用：推断 toolUse 而非报错。"""
+    function = SimpleNamespace(name="echo", arguments='{"a":1}')
+    tool_delta = SimpleNamespace(index=0, id="c1", function=function, custom=None)
+    model = _make_model()
+    model.compat = {"supportsFinishReason": False}
+
+    events, _, message = await _collect_openai(
+        monkeypatch,
+        [_chunk(delta=SimpleNamespace(content=None, tool_calls=[tool_delta]))],
+        model=model,
+    )
+
+    assert message.stop_reason == "toolUse"
+    assert not any(isinstance(event, ErrorEvent) for event in events)
+
+
+async def test_openai_sampling_params_merged_and_override(monkeypatch):
+    """模型级与请求级 sampling_params 合并；请求级按 key 覆盖模型级；
+    合并结果在具名字段之后写入，因此覆盖具名字段（如 temperature）。"""
+    capture: dict = {}
+    monkeypatch.setattr(
+        openai_provider,
+        "_create_client",
+        lambda model, api_key, headers, http_client=None: _capturing_openai_client(
+            [_chunk(finish_reason="stop")], capture
+        ),
+    )
+    model = _make_model()
+    model.sampling_params = {"top_k": 40, "min_p": 0.05}
+
+    event_stream = openai_provider._run_openai_stream(
+        model,
+        Context(messages=[UserMessage(content="hi")]),
+        StreamOptions(
+            api_key="test",
+            temperature=0.5,
+            sampling_params={"top_p": 0.9, "top_k": 50, "temperature": 0.2},
+        ),
+    )
+    async for _ in event_stream:
+        pass
+    await event_stream.result()
+
+    assert capture["top_k"] == 50  # 请求级覆盖模型级
+    assert capture["min_p"] == 0.05  # 模型级独有键保留
+    assert capture["top_p"] == 0.9  # 请求级新增
+    assert capture["temperature"] == 0.2  # 合并的 sampling_params 覆盖具名字段 0.5
+
+
+async def test_openai_thinking_token_budget_injected(monkeypatch):
+    """supportsThinkingTokenBudget + reasoning：注入 thinking_token_budget。"""
+    capture: dict = {}
+    monkeypatch.setattr(
+        openai_provider,
+        "_create_client",
+        lambda model, api_key, headers, http_client=None: _capturing_openai_client(
+            [_chunk(finish_reason="stop")], capture
+        ),
+    )
+    model = _make_model()
+    model.reasoning = True
+    model.max_tokens = 32768
+    model.compat = {"supportsThinkingTokenBudget": True}
+
+    from pi_ai import SimpleStreamOptions
+
+    event_stream = openai_provider._run_openai_stream(
+        model,
+        Context(messages=[UserMessage(content="hi")]),
+        SimpleStreamOptions(api_key="test", reasoning="medium"),
+    )
+    async for _ in event_stream:
+        pass
+    await event_stream.result()
+
+    # medium 默认预算 8192，上限 max_tokens(32768) - 1024 远大于 8192
+    assert capture["thinking_token_budget"] == 8192
+
+
+async def test_openai_thinking_token_budget_capped_by_max_tokens(monkeypatch):
+    """thinking_token_budget 不超过 max_tokens - MIN_ANSWER_TOKENS，保证答案空间。"""
+    capture: dict = {}
+    monkeypatch.setattr(
+        openai_provider,
+        "_create_client",
+        lambda model, api_key, headers, http_client=None: _capturing_openai_client(
+            [_chunk(finish_reason="stop")], capture
+        ),
+    )
+    model = _make_model()
+    model.reasoning = True
+    model.max_tokens = 4096
+    model.compat = {"supportsThinkingTokenBudget": True}
+
+    from pi_ai import SimpleStreamOptions
+
+    event_stream = openai_provider._run_openai_stream(
+        model,
+        Context(messages=[UserMessage(content="hi")]),
+        SimpleStreamOptions(api_key="test", reasoning="high", max_tokens=4096),
+    )
+    async for _ in event_stream:
+        pass
+    await event_stream.result()
+
+    # high 默认 16384，但上限 = 4096 - 1024 = 3072
+    assert capture["thinking_token_budget"] == 3072
+
+
+async def test_openai_thinking_token_budget_skipped_without_compat(monkeypatch):
+    """未声明 supportsThinkingTokenBudget 时不注入预算。"""
+    capture: dict = {}
+    monkeypatch.setattr(
+        openai_provider,
+        "_create_client",
+        lambda model, api_key, headers, http_client=None: _capturing_openai_client(
+            [_chunk(finish_reason="stop")], capture
+        ),
+    )
+    model = _make_model()
+    model.reasoning = True
+
+    from pi_ai import SimpleStreamOptions
+
+    event_stream = openai_provider._run_openai_stream(
+        model,
+        Context(messages=[UserMessage(content="hi")]),
+        SimpleStreamOptions(api_key="test", reasoning="high"),
+    )
+    async for _ in event_stream:
+        pass
+    await event_stream.result()
+
+    assert "thinking_token_budget" not in capture
