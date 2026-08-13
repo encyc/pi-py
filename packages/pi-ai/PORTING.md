@@ -1,6 +1,6 @@
 # pi-ai 移植注记
 
-对应上游：[`@earendil-works/pi-ai`](https://github.com/earendil-works/pi/tree/main/packages/ai)（v0.83.0）
+对应上游：[`@earendil-works/pi-ai`](https://github.com/earendil-works/pi/tree/main/packages/ai)（v0.84.1）
 
 ## 进度
 
@@ -47,6 +47,17 @@
 ## cherry-pick
 
 （暂无）
+
+## v0.84.1 同步说明（破例同步 patch）
+
+> 按现行策略只追上游 minor；本轮由用户点名 0.84.1，属破例跨 minor（0.83→0.84）并叠加 patch 的同步。
+
+- OpenAI-compatible 适配器支持声明 ``compat.supportsFinishReason=False`` 的兼容端点：流结束未见 ``finish_reason`` 时按内容推断 ``stop``/``toolUse``，不再误报错误。
+- 新增泛型采样参数：``StreamOptions.sampling_params`` 与 ``Model.sampling_params``，由 OpenAI-compatible 适配器在具名字段之后合并（请求级按 key 覆盖模型级，且覆盖具名字段）。
+- 新增 ``thinking_token_budget``（vLLM 等）：当 ``compat.supportsThinkingTokenBudget=True`` 且有 reasoning 时注入顶层预算，保证为答案留出 token 空间。
+- Anthropic 适配器保留 ``content_block_start`` 携带的初始 text/thinking/signature。
+- ``KnownProvider`` 补 ``baseten``、``qwen-token-plan-individual``（仅类型对齐，未注册实现）。
+- **未移植**（裁剪范围）：deferred/background 响应模式（``StopReason "deferred"`` / ``DeferredHandle``，属 OpenAI Responses）、telemetry context、Baseten provider 实现、``baseten`` thinkingFormat / ``chatTemplateArgs``、error-body 的 plain-object 修补（本端错误处理不涉及该 bug）、动态模型目录与 ``models.generated``。
 
 ## v0.83.0 同步说明
 

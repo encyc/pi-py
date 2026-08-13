@@ -1,6 +1,6 @@
 # pi-server 移植注记
 
-对应上游：[`@earendil-works/pi-server`](https://github.com/earendil-works/pi/tree/main/packages/server)（v0.83.0）
+对应上游：[`@earendil-works/pi-server`](https://github.com/earendil-works/pi/tree/main/packages/server)（v0.84.1）
 
 ## 有意偏离上游
 
@@ -14,6 +14,11 @@
 ## cherry-pick
 
 （暂无）
+
+## v0.84.1 同步说明（破例同步 patch）
+
+- 上游本轮 server 重写（composable protocol server + Unix transport）依赖未移植的 ``protocol`` / ``client`` / ``telemetry`` 包。本端精简 RPC/supervisor 维持现状，无映射的运行时变更。
+- 本包仅同步版本、上游引用与内部依赖约束（``pi-coding-agent`` → ``>=0.84.1,<0.85``）。
 
 ## v0.83.0 同步说明
 

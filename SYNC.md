@@ -60,3 +60,4 @@ LLM provider 的 API 变动频繁，两个 minor 之间可能积累"上游已修
 | 2026-07-22 | 0.81.1 | 推翻重建，建立新基线（对应上游 v0.81.1） |
 | 2026-07-27 | 0.82.1 | 适配受约束工具采样、可取消 provider 重试与摘要请求隔离 |
 | 2026-07-30 | 0.83.0 | 适配 pending/raw stop reason、HTTP client 注入与 OpenAI 工具增量修复 |
+| 2026-08-12 | 0.84.1 | 破例同步 patch：泛型采样参数、thinking_token_budget、无 finish_reason 流推断、Anthropic 初始块保留、shouldStopAfterTurn 等 |

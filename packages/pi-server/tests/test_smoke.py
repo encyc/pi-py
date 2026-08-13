@@ -4,5 +4,5 @@
 def test_import() -> None:
     import pi_server
 
-    assert pi_server.__version__ == "0.83.0"
-    assert pi_server.__upstream_ref__ == "earendil-works/pi@v0.83.0"
+    assert pi_server.__version__ == "0.84.1"
+    assert pi_server.__upstream_ref__ == "earendil-works/pi@v0.84.1"

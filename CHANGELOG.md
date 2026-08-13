@@ -6,6 +6,30 @@
 本项目在 `CHANGELOG.md` 中保留公共的、用户可见的变更记录。
 具体的提交记录参见 [GitHub Releases](https://github.com/earendil-works/pi-py/releases)。
 
+## 0.84.1 (2026-08-12)
+
+对齐上游 v0.84.1（破例同步 patch：跨 minor 0.83→0.84 并叠加 0.84.1 patch）。
+
+### pi-ai
+
+- OpenAI-compatible 适配器支持 ``compat.supportsFinishReason=False`` 的兼容端点：流结束未见 ``finish_reason`` 时按内容推断 ``stop``/``toolUse``，不再误报错误。
+- 新增泛型采样参数 ``StreamOptions.sampling_params`` / ``Model.sampling_params``，由 OpenAI-compatible 适配器在具名字段之后合并（请求级按 key 覆盖模型级，并覆盖具名字段）。
+- 新增 ``thinking_token_budget``（vLLM 等）：``compat.supportsThinkingTokenBudget=True`` 且有 reasoning 时注入顶层预算，保证为答案留出 token 空间。
+- Anthropic 适配器保留 ``content_block_start`` 携带的初始 text/thinking/signature。
+- ``KnownProvider`` 补 ``baseten``、``qwen-token-plan-individual``（仅类型对齐）。
+
+### pi-agent-core
+
+- ``should_stop_after_turn`` 钩子接入 agent loop 并在 ``Agent`` / ``AgentOptions`` 上公开。
+- ``before_tool_call`` 返回 ``block + terminate`` 时被 block 的工具调用可终止后续轮次。
+- ``Agent.reset()`` 在活跃运行期间拒绝并抛错。
+
+### 其它
+
+- ``pi-storage-sqlite`` / ``pi-coding-agent`` / ``pi-server``：上游本轮改动不在本端精简实现范围内，无运行时行为变更，仅同步版本与依赖约束。
+- 五个 Python 包统一升级到 0.84.1，内部依赖范围更新为 ``>=0.84.1,<0.85``。
+- deferred/background 响应模式、telemetry、harness v2、CLI/TUI、新 provider 等上游能力仍在裁剪范围之外。
+
 ## 0.83.0 (2026-07-30)
 
 对齐上游 v0.83.0。

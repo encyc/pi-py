@@ -636,7 +636,7 @@ dev = [
 
 [[package]]
 name = "pi-py-agent-core"
-version = "0.83.0"
+version = "0.84.1"
 source = { editable = "packages/pi-agent-core" }
 dependencies = [
     { name = "pi-py-ai" },
@@ -653,7 +653,7 @@ requires-dist = [
 
 [[package]]
 name = "pi-py-ai"
-version = "0.83.0"
+version = "0.84.1"
 source = { editable = "packages/pi-ai" }
 dependencies = [
     { name = "anthropic" },
@@ -674,7 +674,7 @@ requires-dist = [
 
 [[package]]
 name = "pi-py-coding-agent"
-version = "0.83.0"
+version = "0.84.1"
 source = { editable = "packages/pi-coding-agent" }
 dependencies = [
     { name = "pi-py-agent-core" },
@@ -693,7 +693,7 @@ requires-dist = [
 
 [[package]]
 name = "pi-py-server"
-version = "0.83.0"
+version = "0.84.1"
 source = { editable = "packages/pi-server" }
 dependencies = [
     { name = "pi-py-coding-agent" },
@@ -704,7 +704,7 @@ requires-dist = [{ name = "pi-py-coding-agent", editable = "packages/pi-coding-a
 
 [[package]]
 name = "pi-py-storage-sqlite"
-version = "0.83.0"
+version = "0.84.1"
 source = { editable = "packages/pi-storage-sqlite" }
 dependencies = [
     { name = "pi-py-agent-core" },
