@@ -461,12 +461,21 @@ def _run_anthropic_stream(
                     # blk 在各 elif 分支复用；声明为 Optional 以兼容后续分支的查找赋值
                     blk: _Block | None = None
                     if bt == "text":
-                        output.content.append(TextContent(text=""))
+                        # 保留 content_block_start 携带的初始文本（某些响应在 start 即带内容）
+                        initial_text = getattr(cb, "text", None) or ""
+                        output.content.append(TextContent(text=initial_text))
                         blk = _Block(aidx, cidx)
                         blocks[aidx] = blk
                         es.push(TextStartEvent(content_index=cidx, partial=output))
                     elif bt == "thinking":
-                        output.content.append(ThinkingContent(thinking="", thinking_signature=""))
+                        # 保留初始 thinking 文本与 signature
+                        initial_thinking = getattr(cb, "thinking", None) or ""
+                        initial_sig = getattr(cb, "signature", None) or ""
+                        output.content.append(
+                            ThinkingContent(
+                                thinking=initial_thinking, thinking_signature=initial_sig
+                            )
+                        )
                         blk = _Block(aidx, cidx)
                         blocks[aidx] = blk
                         es.push(ThinkingStartEvent(content_index=cidx, partial=output))
