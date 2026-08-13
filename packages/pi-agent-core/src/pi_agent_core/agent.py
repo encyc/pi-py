@@ -88,6 +88,7 @@ class AgentOptions:
         before_tool_call: Any = None,
         after_tool_call: Any = None,
         prepare_next_turn: Any = None,
+        should_stop_after_turn: Any = None,
         steering_mode: QueueMode = "one-at-a-time",
         follow_up_mode: QueueMode = "one-at-a-time",
         tool_execution: ToolExecutionMode = "parallel",
@@ -109,6 +110,7 @@ class AgentOptions:
         self.before_tool_call = before_tool_call
         self.after_tool_call = after_tool_call
         self.prepare_next_turn = prepare_next_turn
+        self.should_stop_after_turn = should_stop_after_turn
         self.steering_mode = steering_mode
         self.follow_up_mode = follow_up_mode
         self.tool_execution = tool_execution
@@ -128,6 +130,7 @@ class Agent:
         self._before_tool_call = opts.before_tool_call
         self._after_tool_call = opts.after_tool_call
         self._prepare_next_turn = opts.prepare_next_turn
+        self._should_stop_after_turn = opts.should_stop_after_turn
         self._tool_execution = opts.tool_execution
 
         self.steering_queue = _PendingMessageQueue(opts.steering_mode)
@@ -196,6 +199,9 @@ class Agent:
             await self._active_run["promise"]
 
     def reset(self) -> None:
+        # 对齐 v0.84.1：运行中拒绝 reset，避免与活跃循环竞争状态
+        if self._active_run:
+            raise RuntimeError("Agent is already processing. Wait for completion before resetting.")
         self._state.messages = []
         self._state.streaming_message = None
         self._state.error_message = None
@@ -264,6 +270,17 @@ class Agent:
             before_tool_call=self._before_tool_call,
             after_tool_call=self._after_tool_call,
         )
+        # should_stop_after_turn：把 Agent 级回调包成 loop 级钩子
+        if self._should_stop_after_turn:
+            hook = self._should_stop_after_turn
+
+            async def _should_stop_after_turn(ctx: dict[str, Any]) -> bool:
+                result = hook(ctx)
+                if inspect.isawaitable(result):
+                    result = await result
+                return bool(result)
+
+            cfg.should_stop_after_turn = _should_stop_after_turn
         cfg.reasoning = self._state.thinking_level or None
         # 用闭包接 steering/follow-up 队列
         _skip = [skip_initial_steering]
