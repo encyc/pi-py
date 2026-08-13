@@ -67,6 +67,8 @@ KnownProvider = Literal[
     "minimax-cn",
     "qwen-token-plan",
     "qwen-token-plan-cn",
+    "qwen-token-plan-individual",
+    "baseten",
     "xiaomi",
     "kimi-coding",
     "opencode",
@@ -351,6 +353,10 @@ class Model(BaseModel):
     cost: ModelCost = Field(default_factory=ModelCost)
     context_window: int = Field(default=0, alias="contextWindow")
     max_tokens: int = Field(default=0, alias="maxTokens")
+    #: 模型级默认采样参数。对应上游 ``Model.samplingParams``。
+    #: 由 OpenAI-compatible 适配器合并进请求体；请求级 ``StreamOptions.sampling_params``
+    #: 按 key 覆盖模型级。其他 API 忽略。
+    sampling_params: dict[str, Any] | None = Field(default=None, alias="samplingParams")
     headers: dict[str, str] | None = None
     compat: dict[str, Any] | None = None
 
@@ -368,6 +374,12 @@ class StreamOptions(BaseModel):
 
     temperature: float | None = None
     max_tokens: int | None = Field(default=None, alias="maxTokens")
+    #: 请求级采样参数。对应上游 ``StreamOptions.samplingParams``。
+    #: 由 OpenAI-compatible 适配器在具名字段之后合并进请求体（因此自定义键覆盖
+    #: 具名字段），合并时按 key 覆盖 ``Model.sampling_params``。例如可传
+    #: ``top_p``/``top_k``/``min_p``/``repetition_penalty`` 给 llama.cpp/vLLM/SGLang
+    #: 等服务器。其他 API 忽略。
+    sampling_params: dict[str, Any] | None = Field(default=None, alias="samplingParams")
     api_key: str | None = Field(default=None, alias="apiKey")
     http_client: Any = Field(default=None, alias="httpClient", exclude=True)
     transport: Transport | None = None

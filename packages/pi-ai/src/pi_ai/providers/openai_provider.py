@@ -11,7 +11,9 @@ Chat Completions 协议（覆盖 OpenAI 及大量兼容厂商）。
 3. **文本/思考是单槽位**：同一时间只有一个激活的 text 块和一个 thinking 块。
 4. **usage 在 chunk 级别**提取（``stream_options={"include_usage": True}``）。
 5. **错误不内联重试**：编码为 error 事件（``stopReason="error"`` + ``errorMessage``）。
-6. **finish_reason 缺失 = 异常**。
+6. **终止判定**：``finish_reason`` 缺失默认视为异常；但对声明
+   ``compat.supportsFinishReason=False`` 的兼容端点（不发 finish_reason），
+   流结束时按内容推断 ``stop``/``toolUse``。
 """
 
 from __future__ import annotations
@@ -77,6 +79,24 @@ _STOP_REASON_MAP: dict[str, StopReason] = {
     "content_filter": "error",
     "network_error": "error",
 }
+
+#: 当 thinking 预算与答案共享响应上限时，始终为答案保留的 token 数。
+#: 对应上游 ``simple-options.ts`` 的 ``MIN_ANSWER_TOKENS``。
+_MIN_ANSWER_TOKENS = 1024
+
+#: 默认 thinking token 预算（按 reasoning level）。对应上游
+#: ``support thinking_token_budget`` 的内置预算。
+_DEFAULT_THINKING_BUDGETS: dict[str, int] = {
+    "minimal": 1024,
+    "low": 2048,
+    "medium": 8192,
+    "high": 16384,
+}
+
+
+def _clamp_reasoning(level: str) -> str:
+    """把 ``xhigh``/``max`` 折叠为 ``high``（预算表只覆盖到 high）。对应上游 ``clampReasoning``。"""
+    return "high" if level in ("xhigh", "max") else level
 
 
 # ============================================================
@@ -381,6 +401,27 @@ def _run_openai_stream(
         if options and options.timeout_ms is not None:
             params["timeout"] = options.timeout_ms / 1000
 
+        # thinking_token_budget（vLLM 等）：推理与答案共享 max_tokens，不设上限时
+        # 一次推理密集的轮次可能耗尽整个响应、既无答案也无工具调用。
+        # 仅当 compat.supportsThinkingTokenBudget 为真时生效；与 thinkingFormat
+        # 无关（同一台服务器可同时服务 zai/qwen/chat-template 模型）。
+        reasoning_effort = getattr(options, "reasoning", None) if options else None
+        if compat.get("supportsThinkingTokenBudget") and reasoning_effort and model.reasoning:
+            level = _clamp_reasoning(reasoning_effort)
+            custom = getattr(options, "thinking_budgets", None) or {}
+            budgets = {**_DEFAULT_THINKING_BUDGETS, **custom}
+            ceiling = params.get("max_tokens") or model.max_tokens
+            budget = min(budgets.get(level, 0), max(0, ceiling - _MIN_ANSWER_TOKENS))
+            if budget > 0:
+                params["thinking_token_budget"] = budget
+
+        # 泛型采样参数：放在具名字段之后，使自定义键覆盖它们（如 llama.cpp/vLLM/
+        # SGLang 的 top_p/top_k/min_p/repetition_penalty）。模型级按 key 被请求级覆盖。
+        if model.sampling_params:
+            params.update(model.sampling_params)
+        if options and options.sampling_params:
+            params.update(options.sampling_params)
+
         # 流式块状态：用真实模型实例累加，保证 output.content 始终持合法对象
         text_block: TextContent | None = None
         text_content_idx: int | None = None
@@ -583,13 +624,22 @@ def _run_openai_stream(
                     )
                 )
 
-            # 终止判定（finish_reason 缺失 = 异常，与上游一致）
-            if not has_finish_reason or output.stop_reason == "pending":
-                raise RuntimeError("Stream ended without finish_reason")
+            # 终止判定（对齐 v0.84.1 supportsFinishReason 语义）
+            supports_finish_reason = compat.get("supportsFinishReason", True)
             if output.stop_reason == "aborted":
                 raise RuntimeError("Request was aborted")
+            # 声明不发 finish_reason 的兼容端点：按内容推断 stop/toolUse
+            if not has_finish_reason and not supports_finish_reason:
+                output.stop_reason = (
+                    "toolUse" if any(isinstance(b, ToolCall) for b in output.content) else "stop"
+                )
             if output.stop_reason == "error":
                 raise RuntimeError(output.error_message or "provider error")
+            # 仅当端点本应发 finish_reason 却没发、或仍停在 pending 时才视为异常
+            if (
+                supports_finish_reason and not has_finish_reason
+            ) or output.stop_reason == "pending":
+                raise RuntimeError("Stream ended without finish_reason")
 
             es.push(DoneEvent(reason=output.stop_reason, message=output))
             es.end(output)

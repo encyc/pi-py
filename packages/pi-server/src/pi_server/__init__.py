@@ -16,8 +16,8 @@
 
 from __future__ import annotations
 
-__version__ = "0.83.0"
-__upstream_ref__ = "earendil-works/pi@v0.83.0"
+__version__ = "0.84.1"
+__upstream_ref__ = "earendil-works/pi@v0.84.1"
 
 from .config import get_server_dir, get_socket_path
 from .ipc import handle_request, send_request, serve

@@ -225,6 +225,22 @@ async def _run_loop(
                 await _safe_emit(emit, AgentEndEvent(messages=new_messages))
                 return
 
+            # should_stop_after_turn（对齐 v0.84.1）：本轮结束后询问是否提前终止
+            if config.should_stop_after_turn:
+                stop = await _maybe_await(
+                    config.should_stop_after_turn(
+                        {
+                            "message": message,
+                            "tool_results": tool_results,
+                            "context": current_context,
+                            "new_messages": new_messages,
+                        }
+                    )
+                )
+                if stop:
+                    await _safe_emit(emit, AgentEndEvent(messages=new_messages))
+                    return
+
             # 再次拉取 steering
             pending_messages = await _safe_drain(config.get_steering_messages)
 
@@ -494,7 +510,10 @@ async def _execute_single(
                             is_error=is_error,
                         ),
                     )
-                    return _make_result_msg(tool_call, result, is_error), False
+                    # 对齐 v0.84.1：被 block 的工具调用可声明 terminate 以终止后续轮次
+                    return _make_result_msg(tool_call, result, is_error), bool(
+                        before.get("terminate")
+                    )
 
             # 执行
             def on_update(partial: AgentToolResult) -> None:

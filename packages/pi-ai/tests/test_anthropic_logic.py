@@ -364,3 +364,68 @@ def test_anthropic_client_receives_injected_http_client(monkeypatch):
     anthropic_provider._create_client(_budget_model(), "key", None, sentinel)
 
     assert captured["http_client"] is sentinel
+
+
+# ============================================================
+# v0.84.1: 保留 content_block_start 携带的初始内容
+# ============================================================
+
+
+async def test_anthropic_preserves_initial_text_block_content(monkeypatch):
+    """content_block_start 携带的初始文本被保留，后续 delta 在其上累加。"""
+    events = [
+        SimpleNamespace(type="message_start", message=SimpleNamespace(id="m1", usage=None)),
+        SimpleNamespace(
+            type="content_block_start",
+            index=0,
+            content_block=SimpleNamespace(type="text", text="Hello"),
+        ),
+        SimpleNamespace(
+            type="content_block_delta",
+            index=0,
+            delta=SimpleNamespace(type="text_delta", text=" world"),
+        ),
+        SimpleNamespace(type="content_block_stop", index=0),
+        SimpleNamespace(
+            type="message_delta",
+            delta=SimpleNamespace(stop_reason="end_turn"),
+            usage=None,
+        ),
+        SimpleNamespace(type="message_stop"),
+    ]
+
+    seen, _, message = await _collect_anthropic(monkeypatch, events)
+
+    assert not any(isinstance(event, ErrorEvent) for event in seen)
+    assert message.content[0].text == "Hello world"
+
+
+async def test_anthropic_preserves_initial_thinking_block_content(monkeypatch):
+    """content_block_start 携带的初始 thinking 文本与 signature 被保留。"""
+    events = [
+        SimpleNamespace(type="message_start", message=SimpleNamespace(id="m1", usage=None)),
+        SimpleNamespace(
+            type="content_block_start",
+            index=0,
+            content_block=SimpleNamespace(type="thinking", thinking="hmm", signature="sig0"),
+        ),
+        SimpleNamespace(
+            type="content_block_delta",
+            index=0,
+            delta=SimpleNamespace(type="thinking_delta", thinking=" more"),
+        ),
+        SimpleNamespace(type="content_block_stop", index=0),
+        SimpleNamespace(
+            type="message_delta",
+            delta=SimpleNamespace(stop_reason="end_turn"),
+            usage=None,
+        ),
+        SimpleNamespace(type="message_stop"),
+    ]
+
+    seen, _, message = await _collect_anthropic(monkeypatch, events)
+
+    assert not any(isinstance(event, ErrorEvent) for event in seen)
+    thinking = message.content[0]
+    assert thinking.thinking == "hmm more"
+    assert thinking.thinking_signature == "sig0"

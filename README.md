@@ -6,7 +6,7 @@
 
 ## 同步状态
 
-- **当前对齐版本**：[`v0.83.0`](./UPSTREAM_VERSION)（2026-07-29）
+- **当前对齐版本**：[`v0.84.1`](./UPSTREAM_VERSION)（2026-08-12，破例同步 patch）
 - **同步策略**：仅在上游发布 `0.x.0`（minor）时集中同步，详见 [`SYNC.md`](./SYNC.md)
 
 | 包 | 上游对应 | 状态 | 说明 |
@@ -139,7 +139,7 @@ uv run mypy             # 类型检查（strict）
 
 ## 路线图
 
-- [x] 5 包基线完成（对齐上游 v0.83.0）
+- [x] 5 包基线完成（对齐上游 v0.84.1）
 - [x] OpenAI/DeepSeek provider 真实验证
 - [x] Anthropic provider（纯逻辑测试，待真实 API 验证）
 - [ ] Google / Mistral / Bedrock provider

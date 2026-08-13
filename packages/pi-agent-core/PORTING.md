@@ -1,6 +1,6 @@
 # pi-agent-core 移植注记
 
-对应上游：[`@earendil-works/pi-agent-core`](https://github.com/earendil-works/pi/tree/main/packages/agent)（v0.83.0）
+对应上游：[`@earendil-works/pi-agent-core`](https://github.com/earendil-works/pi/tree/main/packages/agent)（v0.84.1）
 
 ## 有意偏离上游
 
@@ -14,6 +14,14 @@
 ## cherry-pick
 
 （暂无）
+
+## v0.84.1 同步说明（破例同步 patch）
+
+- ``should_stop_after_turn`` 钩子接入 ``_run_loop``（每轮 ``TurnEnd`` 后询问，返回真则终止），并在 ``Agent`` / ``AgentOptions`` 上公开。
+- ``before_tool_call`` 返回 ``block + terminate`` 时，被 block 的工具调用可终止后续轮次。
+- ``Agent.reset()`` 在活跃运行期间拒绝并抛错。
+- 上游 harness v2（reducer / telemetry / JSONL codec / session 仓库化 / conformance）仍属裁剪范围，未追逐。
+- 本包同步版本、上游引用与对 ``pi-ai>=0.84.1,<0.85`` 的依赖约束。
 
 ## v0.83.0 同步说明
 

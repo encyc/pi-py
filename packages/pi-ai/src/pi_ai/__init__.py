@@ -16,8 +16,8 @@
 
 from __future__ import annotations
 
-__version__ = "0.83.0"
-__upstream_ref__ = "earendil-works/pi@v0.83.0"
+__version__ = "0.84.1"
+__upstream_ref__ = "earendil-works/pi@v0.84.1"
 
 # ---- 类型 ----
 # ---- 事件流 ----

@@ -191,3 +191,116 @@ async def test_event_types_complete():
         "tool_execution_end",
     }
     assert expected.issubset(types), f"缺失事件: {expected - types}"
+
+
+# ============================================================
+# v0.84.1: blocked tool terminate / should_stop_after_turn / reset guard
+# ============================================================
+
+
+async def test_before_tool_call_block_with_terminate_ends_loop():
+    """before_tool_call 返回 block+terminate：循环在该工具后终止，不再发起下一轮。"""
+    push_script(FauxScript(tool_calls=[ToolCall(id="c1", name="echo", arguments={"text": "x"})]))
+
+    async def before(ctx_, cancel_event=None):
+        return {"block": True, "terminate": True, "reason": "not allowed"}
+
+    ctx = AgentContext(system_prompt="", messages=[], tools=[_EchoTool()])
+    config = AgentLoopConfig(model=_faux_model(), tool_execution="parallel")
+    config.before_tool_call = before
+
+    es = agent_loop([UserMessage(content="go")], ctx, config)
+    events = await _collect(es)
+    messages = await es.result()
+
+    assert events[-1].type == "agent_end"
+    # 仅有一轮 assistant（工具调用），无后续回复
+    assistants = [m for m in messages if isinstance(m, AssistantMessage)]
+    assert len(assistants) == 1
+    # 工具结果存在且为 error
+    trs = [m for m in messages if isinstance(m, ToolResultMessage)]
+    assert len(trs) == 1 and trs[0].is_error
+
+
+async def test_before_tool_call_block_without_terminate_continues():
+    """before_tool_call 返回 block（无 terminate）：循环继续到下一轮。"""
+    push_script(FauxScript(tool_calls=[ToolCall(id="c1", name="echo", arguments={"text": "x"})]))
+    push_script(FauxScript(text="done"))
+
+    async def before(ctx_, cancel_event=None):
+        return {"block": True, "reason": "blocked"}
+
+    ctx = AgentContext(system_prompt="", messages=[], tools=[_EchoTool()])
+    config = AgentLoopConfig(model=_faux_model(), tool_execution="parallel")
+    config.before_tool_call = before
+
+    es = agent_loop([UserMessage(content="go")], ctx, config)
+    await _collect(es)
+    messages = await es.result()
+
+    # 循环继续：出现第二轮 assistant 文本回复
+    assistants = [m for m in messages if isinstance(m, AssistantMessage)]
+    assert len(assistants) == 2
+    assert assistants[1].content[0].text == "done"
+
+
+async def test_should_stop_after_turn_ends_loop():
+    """should_stop_after_turn 返回 True：工具轮结束后立即终止，不发起下一轮。"""
+    push_script(FauxScript(tool_calls=[ToolCall(id="c1", name="echo", arguments={"text": "x"})]))
+
+    async def stop(ctx_):
+        return True
+
+    ctx = AgentContext(system_prompt="", messages=[], tools=[_EchoTool()])
+    config = AgentLoopConfig(model=_faux_model(), tool_execution="parallel")
+    config.should_stop_after_turn = stop
+
+    es = agent_loop([UserMessage(content="go")], ctx, config)
+    events = await _collect(es)
+    messages = await es.result()
+
+    assert events[-1].type == "agent_end"
+    assistants = [m for m in messages if isinstance(m, AssistantMessage)]
+    assert len(assistants) == 1  # 仅工具调用轮，无后续
+
+
+async def test_should_stop_after_turn_false_continues():
+    """should_stop_after_turn 返回 False：循环正常继续。"""
+    push_script(FauxScript(tool_calls=[ToolCall(id="c1", name="echo", arguments={"text": "x"})]))
+    push_script(FauxScript(text="after"))
+
+    async def stop(ctx_):
+        return False
+
+    ctx = AgentContext(system_prompt="", messages=[], tools=[_EchoTool()])
+    config = AgentLoopConfig(model=_faux_model(), tool_execution="parallel")
+    config.should_stop_after_turn = stop
+
+    es = agent_loop([UserMessage(content="go")], ctx, config)
+    await _collect(es)
+    messages = await es.result()
+
+    assistants = [m for m in messages if isinstance(m, AssistantMessage)]
+    assert len(assistants) == 2
+
+
+def test_agent_reset_rejected_during_active_run():
+    """Agent 运行中调用 reset() 抛错（对齐 v0.84.1）。"""
+    import pytest
+
+    from pi_agent_core import Agent, AgentOptions
+
+    agent = Agent(AgentOptions())
+    # 模拟活跃运行（reset 仅检查 _active_run 真值）
+    agent._active_run = {"promise": None, "cancel_event": None}
+    with pytest.raises(RuntimeError, match="already processing"):
+        agent.reset()
+
+
+def test_agent_reset_ok_when_idle():
+    """空闲时 reset() 正常清空状态。"""
+    from pi_agent_core import Agent, AgentOptions
+
+    agent = Agent(AgentOptions())
+    agent.reset()  # 不应抛错
+    assert agent._active_run is None
