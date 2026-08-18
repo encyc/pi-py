@@ -17,9 +17,28 @@
 | [`pi-coding-agent`](./packages/pi-coding-agent) | `@earendil-works/pi-coding-agent` | ✅ | 编码 agent SDK（bash/read/edit/write/grep/find/ls） |
 | [`pi-server`](./packages/pi-server) | `@earendil-works/pi-server` | ✅ | agent 服务化（Unix socket + JSONL + supervisor） |
 
+## 安装
+
+所有包均已发布到 [PyPI](https://pypi.org/user/encyc/)（Python ≥ 3.11），可按需安装单个包，内部依赖会自动解析：
+
+```bash
+pip install pi-agent-core   # agent 运行时（含 pi-ai）
+pip install pi-coding-agent # 编码 agent SDK
+```
+
+| PyPI 包 | 用途 |
+|---|---|
+| [`pi-py-ai`](https://pypi.org/project/pi-py-ai/) | 统一 LLM API（OpenAI + Anthropic + retry） |
+| [`pi-py-agent-core`](https://pypi.org/project/pi-py-agent-core/) | agent 循环引擎 + harness |
+| [`pi-py-storage-sqlite`](https://pypi.org/project/pi-py-storage-sqlite/) | SQLite 会话存储后端 |
+| [`pi-py-coding-agent`](https://pypi.org/project/pi-py-coding-agent/) | 编码 agent SDK |
+| [`pi-py-server`](https://pypi.org/project/pi-py-server/) | agent 服务化（Unix socket + JSONL） |
+
+发布流程：打 tag 并创建 GitHub Release 后，[`publish.yml`](./.github/workflows/publish.yml) 自动构建并发布全部 5 个包到 PyPI。发布记录见 [Releases](https://github.com/encyc/pi-py/releases) 与 [CHANGELOG.md](./CHANGELOG.md)。
+
 ## 快速上手
 
-需要 Python 3.11+ 和 [uv](https://docs.astral.sh/uv/)。
+也可以直接从源码运行：
 
 ```bash
 git clone https://github.com/earendil-works/pi-py.git
