@@ -5,7 +5,7 @@ Python port of [@earendil-works/pi-agent-core](https://github.com/earendil-works
 ## Install
 
 ```bash
-pip install pi-agent-core
+pip install pi-py-agent-core
 ```
 
 ## Quick Start
