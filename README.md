@@ -43,7 +43,7 @@ pip install pi-py-coding-agent # 编码 agent SDK
 也可以直接从源码运行：
 
 ```bash
-git clone https://github.com/earendil-works/pi-py.git
+git clone https://github.com/encyc/pi-py.git
 cd pi-py
 uv sync
 ```
