@@ -5,7 +5,7 @@ Python port of [@earendil-works/pi-storage-sqlite-node](https://github.com/earen
 ## Install
 
 ```bash
-pip install pi-storage-sqlite
+pip install pi-py-storage-sqlite
 ```
 
 ## Quick Start

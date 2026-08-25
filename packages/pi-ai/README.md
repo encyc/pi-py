@@ -5,7 +5,7 @@ Python port of [@earendil-works/pi-ai](https://github.com/earendil-works/pi) —
 ## Install
 
 ```bash
-pip install pi-ai
+pip install pi-py-ai
 ```
 
 ## Quick Start

@@ -5,7 +5,7 @@ Python port of [@earendil-works/pi-server](https://github.com/earendil-works/pi)
 ## Install
 
 ```bash
-pip install pi-server
+pip install pi-py-server
 ```
 
 ## Quick Start

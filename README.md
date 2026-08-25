@@ -22,8 +22,8 @@
 所有包均已发布到 [PyPI](https://pypi.org/user/encyc/)（Python ≥ 3.11），可按需安装单个包，内部依赖会自动解析：
 
 ```bash
-pip install pi-agent-core   # agent 运行时（含 pi-ai）
-pip install pi-coding-agent # 编码 agent SDK
+pip install pi-py-agent-core   # agent 运行时（含 pi-py-ai）
+pip install pi-py-coding-agent # 编码 agent SDK
 ```
 
 | PyPI 包 | 用途 |

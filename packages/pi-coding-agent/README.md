@@ -5,7 +5,7 @@ Python port of [@earendil-works/pi-coding-agent](https://github.com/earendil-wor
 ## Install
 
 ```bash
-pip install pi-coding-agent
+pip install pi-py-coding-agent
 ```
 
 ## Quick Start
