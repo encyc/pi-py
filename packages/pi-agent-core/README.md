@@ -8,6 +8,8 @@ Python port of [@earendil-works/pi-agent-core](https://github.com/earendil-works
 pip install pi-py-agent-core
 ```
 
+Import name has no prefix: `from pi_agent_core import ...`
+
 ## Quick Start
 
 ```python

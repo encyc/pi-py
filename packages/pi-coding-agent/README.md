@@ -8,6 +8,8 @@ Python port of [@earendil-works/pi-coding-agent](https://github.com/earendil-wor
 pip install pi-py-coding-agent
 ```
 
+Import name has no prefix: `from pi_coding_agent import ...`
+
 ## Quick Start
 
 ```python

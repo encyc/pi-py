@@ -8,6 +8,8 @@ Python port of [@earendil-works/pi-server](https://github.com/earendil-works/pi)
 pip install pi-py-server
 ```
 
+Import name has no prefix: `from pi_server import ...`
+
 ## Quick Start
 
 ```python

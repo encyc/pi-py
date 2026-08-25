@@ -26,6 +26,8 @@ pip install pi-py-agent-core   # agent 运行时（含 pi-py-ai）
 pip install pi-py-coding-agent # 编码 agent SDK
 ```
 
+> 发行名带 `pi-py-` 前缀（`pi-agent-core` 等短名在 PyPI 已被他人占用），导入名不带前缀，如 `from pi_agent_core import Agent`。
+
 | PyPI 包 | 用途 |
 |---|---|
 | [`pi-py-ai`](https://pypi.org/project/pi-py-ai/) | 统一 LLM API（OpenAI + Anthropic + retry） |

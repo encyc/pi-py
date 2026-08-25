@@ -8,6 +8,8 @@ Python port of [@earendil-works/pi-ai](https://github.com/earendil-works/pi) —
 pip install pi-py-ai
 ```
 
+Import name has no prefix: `from pi_ai import ...`
+
 ## Quick Start
 
 ```python

@@ -8,6 +8,8 @@ Python port of [@earendil-works/pi-storage-sqlite-node](https://github.com/earen
 pip install pi-py-storage-sqlite
 ```
 
+Import name has no prefix: `from pi_storage_sqlite import ...`
+
 ## Quick Start
 
 ```python
