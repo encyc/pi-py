@@ -124,3 +124,69 @@ async def test_faux_rejects_pending_as_final_reason(faux_model, ctx):
     assert events[-1].type == "error"
     assert result.stop_reason == "error"
     assert "without a stop reason" in (result.error_message or "")
+
+
+# ============================================================
+# 回归：aborted / error 必须以 ErrorEvent 终结（否则流永不结束）
+# ============================================================
+#
+# 历史 bug：faux 对**所有**终止原因都发 DoneEvent，而 DoneEvent.reason 只接受
+# stop|length|toolUse（events.py:97，与上游一致）。于是
+# ``FauxScript(stop_reason="aborted")`` 在 push 时抛 ValidationError；该异常发生在
+# asyncio 任务内、无人 await，流既不 done 也不 error，消费者 ``async for``
+# 永久挂起。上游 faux.ts:444-449 的规则是：error/aborted → ErrorEvent。
+
+
+@pytest.mark.parametrize("reason", ["aborted", "error"])
+async def test_faux_terminal_error_reasons_emit_error_event(faux_model, ctx, reason):
+    push_script(FauxScript(text="partial", stop_reason=reason))
+    es = stream(faux_model, ctx)
+    events = await _collect(es)
+    result = await es.result()
+
+    assert events[-1].type == "error"
+    assert events[-1].reason == reason
+    assert result.stop_reason == reason
+
+
+@pytest.mark.parametrize("reason", ["stop", "length", "toolUse"])
+async def test_faux_success_reasons_emit_done_event(faux_model, ctx, reason):
+    push_script(FauxScript(text="ok", stop_reason=reason))
+    es = stream(faux_model, ctx)
+    events = await _collect(es)
+    result = await es.result()
+
+    assert events[-1].type == "done"
+    assert result.stop_reason == reason
+
+
+async def test_faux_aborted_stream_does_not_hang(faux_model, ctx):
+    """核心回归：曾经会挂死。用 wait_for 给一个硬上限，超时即失败。"""
+    import asyncio
+
+    push_script(FauxScript(stop_reason="aborted"))
+    es = stream(faux_model, ctx)
+    events = await asyncio.wait_for(_collect(es), timeout=5)
+    assert events[-1].type == "error"
+
+
+async def test_faux_driver_failure_still_terminates_the_stream(faux_model, ctx, monkeypatch):
+    """防御层：驱动任务内任何异常都必须转成 error 事件，而不是让流悬空。"""
+    from pi_ai.providers import faux as faux_mod
+
+    class _BoomError(Exception):
+        pass
+
+    def _explode(*args, **kwargs):
+        raise _BoomError("kaboom")
+
+    # 让构造 StartEvent 失败（StartEvent 在 drive() 内被调用）
+    monkeypatch.setattr(faux_mod, "StartEvent", _explode)
+    push_script(FauxScript(text="x"))
+    es = stream(faux_model, ctx)
+    events = await _collect(es)
+
+    assert events[-1].type == "error"
+    result = await es.result()
+    assert result.stop_reason == "error"
+    assert "kaboom" in (result.error_message or "")

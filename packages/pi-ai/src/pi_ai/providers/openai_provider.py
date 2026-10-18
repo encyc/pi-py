@@ -27,6 +27,7 @@ from typing import Any
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
 
+from ..async_utils import maybe_await
 from ..constrained_sampling import (
     GrammarToolInputJsonBuffer,
     append_grammar_tool_input_json_delta,
@@ -36,7 +37,7 @@ from ..constrained_sampling import (
     resolve_grammar_constrained_sampling,
     resolve_json_schema_strict_sampling,
 )
-from ..event_stream import EventStream
+from ..event_stream import AssistantMessageEventStream, EventStream
 from ..events import (
     AssistantMessageEvent,
     DoneEvent,
@@ -52,7 +53,15 @@ from ..events import (
     ToolCallEndEvent,
     ToolCallStartEvent,
 )
+from ..json_parse import parse_streaming_json, parse_tool_call_arguments
 from ..provider_retry import retry_provider_request
+from ..transcript import (
+    ensure_transcript,
+    get_current_system_prompt,
+    get_current_tools,
+    resolve_transcript,
+)
+from ..transform_messages import transform_assistant_content
 from ..types import (
     AssistantMessage,
     Context,
@@ -65,6 +74,7 @@ from ..types import (
     ThinkingTokenBudgetField,
     ToolCall,
     ToolResultMessage,
+    TranscriptContext,
     Usage,
     UsageCost,
     UserMessage,
@@ -400,29 +410,46 @@ def _convert_tools(
 
 
 def _convert_messages(
-    context: Context,
+    context: TranscriptContext,
+    model: Model,
     grammar_tool_input_properties: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, str] | None]:
-    """Context.messages -> OpenAI messages。返回 (messages, dev_headers)。"""
+    """TranscriptContext -> OpenAI messages。返回 (messages, dev_headers)。
+
+    v1.3.0 变更：
+    - **M-1**：系统提示词取自 transcript 的 system message（``systemPrompt`` 已不在
+      provider 契约里）；不支持会话中途 system 消息的端点先折叠（``resolve_transcript``）。
+    - **M-6**：assistant 消息的思考块交由
+      :func:`~pi_ai.transform_messages.transform_assistant_content` 处理——
+      **跨模型丢弃**（v0.85.1 是降级为文本，v1.3.0 反转为丢弃）。
+    - **M-13.5**：用户多模态内容过滤掉空 text 块，避免纯图消息被部分兼容端点拒绝
+      （上游 issue #9797）。
+    """
+    normalized = resolve_transcript(context, False)
+    system_prompt = get_current_system_prompt(normalized.messages)
     out: list[dict[str, Any]] = []
     # 系统提示
-    if context.system_prompt:
-        out.append({"role": "system", "content": context.system_prompt})
+    if system_prompt:
+        out.append({"role": "system", "content": system_prompt})
 
-    for msg in context.messages:
+    for msg in normalized.messages:
         if isinstance(msg, UserMessage):
             content = msg.content
             if isinstance(content, str):
                 out.append({"role": "user", "content": content})
             else:
-                # 内容块数组 -> OpenAI 多模态格式
+                # 内容块数组 -> OpenAI 多模态格式（过滤空 text 块，M-13.5）
                 parts: list[dict[str, Any]] = []
                 for block in content:
                     if block.type == "text":
+                        if not block.text:
+                            continue
                         parts.append({"type": "text", "text": block.text})
                     elif block.type == "image":
                         img: dict[str, Any] = {"url": f"data:{block.mime_type};base64,{block.data}"}
                         parts.append({"type": "image_url", "image_url": img})
+                if not parts:
+                    continue
                 out.append({"role": "user", "content": parts})
         elif isinstance(msg, AssistantMessage):
             # 文本 + thinking -> content；tool_calls 单独。
@@ -432,7 +459,9 @@ def _convert_messages(
             tool_calls: list[dict[str, Any]] = []
             tool_call_blocks: list[ToolCall] = []
             thinking_blocks: list[ThinkingContent] = []
-            for block in msg.__dict__["content"]:
+            # M-6：跨模型思考丢弃 + 清除跨模型 thoughtSignature
+            blocks = transform_assistant_content(list(msg.__dict__["content"]), msg, model)
+            for block in blocks:
                 if isinstance(block, ToolCall):
                     tool_call_blocks.append(block)
                 elif isinstance(block, ThinkingContent):
@@ -505,29 +534,53 @@ def _convert_messages(
 
 
 def _parse_streaming_json(s: str) -> dict[str, Any]:
-    """容错解析不完整的 JSON 字符串。对应上游 ``parseStreamingJson``。"""
-    if not s:
-        return {}
-    try:
-        result: dict[str, Any] = json.loads(s)
-        return result
-    except Exception:
-        pass
-    try:
-        from json_repair import repair_json
+    """容错解析不完整的 JSON 字符串。
 
-        repaired = repair_json(s, return_objects=True)
-        return repaired if isinstance(repaired, dict) else {}
-    except Exception:
-        return {}
+    保留本名以兼容既有调用（provider 内部与测试）；实现已迁移到
+    :mod:`pi_ai.json_parse`，与 Anthropic provider 共用一份。
+    """
+    return parse_streaming_json(s)
+
+
+def _resolve_sampling_params(model: Model, options: StreamOptions | None) -> dict[str, Any] | None:
+    """合并模型级 / 思考级别 / 请求级采样参数。
+
+    对应上游 v1.3.0 ``resolveSamplingParams``（api/simple-options.ts:24）：
+
+    1. ``model.sampling_params``（模型默认）
+    2. ``model.sampling_params_by_thinking_level[生效思考级别]``
+    3. ``options.sampling_params``（请求级）
+
+    后者按 key 覆盖前者。v0.85.1 本端缺第 2 层，且**直连 ``stream()`` 时连第 1 层
+    也会因为模型级只在 ``stream_simple`` 路径被读取而失效**（上游 issue #9506）。
+    三者皆空时返回 None。
+    """
+    request_params = options.sampling_params if options else None
+    if (
+        not model.sampling_params
+        and not model.sampling_params_by_thinking_level
+        and not request_params
+    ):
+        return None
+    merged: dict[str, Any] = dict(model.sampling_params or {})
+    level = getattr(options, "reasoning", None) if options else None
+    if level and model.sampling_params_by_thinking_level:
+        effective = _clamp_reasoning(level)
+        merged.update(model.sampling_params_by_thinking_level.get(effective) or {})
+    if request_params:
+        merged.update(request_params)
+    return merged
 
 
 def _run_openai_stream(
     model: Model,
-    context: Context,
+    context: Context | TranscriptContext,
     options: StreamOptions | None,
 ) -> EventStream[AssistantMessageEvent, AssistantMessage]:
-    es: EventStream[AssistantMessageEvent, AssistantMessage] = EventStream()
+    # 裸 Context 直接调用 provider 时也要归一化，否则 system_prompt/tools 会被
+    # 静默丢弃（它们不在 context.messages 里）。见 transcript.ensure_transcript。
+    context = ensure_transcript(context)
+    es: AssistantMessageEventStream = AssistantMessageEventStream()
     api_key = (options.api_key if options else None) or _resolve_api_key()
 
     async def drive() -> None:
@@ -548,21 +601,26 @@ def _run_openai_stream(
 
         # 构建请求参数
         compat = model.compat or {}
+        normalized_context = resolve_transcript(context, False)
+        current_tools = get_current_tools(normalized_context.messages)
         grammar_tool_input_properties = create_grammar_tool_input_properties(
-            context.tools,
+            current_tools,
             compat.get("supportsOpenAIGrammarTools", False),
         )
-        messages, _ = _convert_messages(context, grammar_tool_input_properties)
+        messages, _ = _convert_messages(normalized_context, model, grammar_tool_input_properties)
         params: dict[str, Any] = {
             "model": model.id,
             "messages": messages,
             "stream": True,
             "stream_options": {"include_usage": True},
         }
-        if context.tools:
+        if current_tools:
             params["tools"] = _convert_tools(
-                context.tools,
-                supports_strict_mode=compat.get("supportsStrictMode", True),
+                current_tools,
+                # M-13.2：v1.3.0 起未知 OpenAI-compatible 端点**默认不发** strict schema
+                # （上游 api/openai-completions.ts:1677 `supportsStrictMode: false`，
+                # issue #9816）。v0.85.1 本端默认 True，会让不支持的端点收到 strict 字段。
+                supports_strict_mode=compat.get("supportsStrictMode", False),
                 supports_openai_grammar_tools=compat.get("supportsOpenAIGrammarTools", False),
             )
         # provider 中性的工具选择（v0.85.1）：OpenAI 直接透传字符串
@@ -602,11 +660,11 @@ def _run_openai_stream(
             params[budget_field] = thinking_budget
 
         # 泛型采样参数：放在具名字段之后，使自定义键覆盖它们（如 llama.cpp/vLLM/
-        # SGLang 的 top_p/top_k/min_p/repetition_penalty）。模型级按 key 被请求级覆盖。
-        if model.sampling_params:
-            params.update(model.sampling_params)
-        if options and options.sampling_params:
-            params.update(options.sampling_params)
+        # SGLang 的 top_p/top_k/min_p/repetition_penalty）。
+        # M-13.4：合并顺序为 模型级 → 思考级别级 → 请求级（上游 issue #9506/#9776）。
+        sampling_params = _resolve_sampling_params(model, options)
+        if sampling_params:
+            params.update(sampling_params)
 
         # 流式块状态：用真实模型实例累加，保证 output.content 始终持合法对象
         text_block: TextContent | None = None
@@ -679,6 +737,11 @@ def _run_openai_stream(
                 cancel_event=options.cancel_event if options else None,
             )
             async for chunk in stream_obj:
+                # M-22：在 Pi 归一化之前观察原始流事件（上游 api/openai-completions.ts:559）。
+                on_stream_event = options.on_provider_stream_event if options else None
+                if on_stream_event is not None:
+                    await maybe_await(on_stream_event(chunk, model))
+
                 # usage（chunk 级）
                 if chunk.usage:
                     output.usage = _parse_chunk_usage(chunk.usage, model)
@@ -697,23 +760,11 @@ def _run_openai_stream(
                         output.error_message = f"Unhandled finish_reason: {choice.finish_reason}"
                     has_finish_reason = True
 
-                # 文本增量（单槽位）
-                delta_content = getattr(delta, "content", None)
-                if delta_content:
-                    if text_block is None:
-                        text_block = TextContent(text="")
-                        text_content_idx = len(output.content)
-                        output.content.append(text_block)
-                        es.push(TextStartEvent(content_index=text_content_idx, partial=output))
-                    text_block.text += delta_content
-                    es.push(
-                        TextDeltaEvent(
-                            content_index=text_content_idx,
-                            delta=delta_content,
-                            partial=output,
-                        )
-                    )
-
+                # M-13.1：**先**处理 reasoning，再处理 content。
+                # 部分代理（如 LiteLLM）把 reasoning 与答案聚合进同一个 delta，
+                # thinking 块必须先于 text 块建立，否则思考会显示在答案之后
+                # （上游 api/openai-completions.ts:592，issue #10926）。
+                #
                 # 思考增量（三字段名，单槽位）
                 for field in _THINKING_FIELDS:
                     thinking_val = getattr(delta, field, None)
@@ -741,6 +792,23 @@ def _run_openai_stream(
                         if streamed_reasoning_details is None:
                             streamed_reasoning_details = []
                         _append_reasoning_detail(streamed_reasoning_details, detail)
+
+                # 文本增量（单槽位）——位于 reasoning 之后（M-13.1）
+                delta_content = getattr(delta, "content", None)
+                if delta_content:
+                    if text_block is None:
+                        text_block = TextContent(text="")
+                        text_content_idx = len(output.content)
+                        output.content.append(text_block)
+                        es.push(TextStartEvent(content_index=text_content_idx, partial=output))
+                    text_block.text += delta_content
+                    es.push(
+                        TextDeltaEvent(
+                            content_index=text_content_idx,
+                            delta=delta_content,
+                            partial=output,
+                        )
+                    )
 
                 # 工具调用增量（双索引 + 字符串累加 + 每增量重新解析）
                 tool_calls_delta = getattr(delta, "tool_calls", None)
@@ -811,6 +879,14 @@ def _run_openai_stream(
                     )
                 )
             for block in tool_blocks_by_index.values():
+                # M-4：收尾时改用 parse_tool_call_arguments —— 不再保留"部分解析前缀"。
+                # 模型给出的完整参数若不是合法 JSON 对象，arguments 置 {} 并写
+                # argumentsError，由工具参数校验把原文报回模型（上游 issue #10897）。
+                # 流式期间的增量解析仍用 parse_streaming_json（见上）。
+                if block.partial_args:
+                    parsed_args, args_error = parse_tool_call_arguments(block.partial_args)
+                    block.tool_call.arguments = parsed_args
+                    block.tool_call.arguments_error = args_error
                 if block.custom_input_property and block.custom_input_buffer:
                     input_value = str(block.tool_call.arguments[block.custom_input_property])
                     closing_delta = append_grammar_tool_input_json_delta(
@@ -902,7 +978,7 @@ class _OpenAIProvider:
     def stream(
         self,
         model: Model,
-        context: Context,
+        context: Context | TranscriptContext,
         options: StreamOptions | None = None,
     ) -> EventStream[AssistantMessageEvent, AssistantMessage]:
         return _run_openai_stream(model, context, options)
@@ -910,7 +986,7 @@ class _OpenAIProvider:
     def stream_simple(
         self,
         model: Model,
-        context: Context,
+        context: Context | TranscriptContext,
         options: SimpleStreamOptions | None = None,
     ) -> EventStream[AssistantMessageEvent, AssistantMessage]:
         return _run_openai_stream(model, context, options)

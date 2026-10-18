@@ -3,35 +3,62 @@ name: Publish to PyPI
 on:
   release:
     types: [published]
-  workflow_dispatch:  # 手动触发
+  workflow_dispatch:  # 手动触发（补发历史版本时必须填 tag）
+    inputs:
+      tag:
+        description: "要发布的 tag（如 v0.85.1），必须是已存在的 semver tag"
+        required: true
+        type: string
 
 permissions:
   id-token: write  # OIDC Trusted Publishing
+  contents: read
 
 jobs:
-  publish:
+  verify-release:
+    name: Verify release metadata
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout the released tag
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          fetch-depth: 0
+
+      # 发布前硬校验，防止「tag 与包版本不一致 / 忘写 CHANGELOG」这类发布事故。
+      # 注意 workflow_dispatch 过去默认检出 main HEAD，会构建出与 tag 不符的包；
+      # 现在手动触发必须指定 tag 并检出该 tag。
+      - name: Verify tag, package versions and CHANGELOG
+        run: python3 .github/scripts/check_release_metadata.py --tag "${{ github.event.release.tag_name || inputs.tag }}"
+
+  publish:
+    name: Build and publish
+    needs: verify-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the released tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
 
       - name: Setup uv
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
 
-      - name: Build all packages
-        run: |
-          uv build --package pi-py-ai
-          uv build --package pi-py-agent-core
-          uv build --package pi-py-storage-sqlite
-          uv build --package pi-py-coding-agent
-          uv build --package pi-py-server
+      # --all-packages 覆盖 packages/ 下全部 workspace 成员：新增包不会因为
+      # 忘记加进构建列表而漏发。仓库根包是 private，不会被构建/上传。
+      - name: Build all workspace packages
+        run: uv build --all-packages --out-dir dist
+
+      - name: List artifacts
+        run: ls -l dist
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         # skip-existing: 跳过 PyPI 上已存在的同名文件，便于失败重试时
         # 只补传缺失的包（如 PyPI 对短时间创建多个新项目的限流 429）。
+        # 注意：它也会让「其实没传上去」看起来成功——所以下一步会显式回读 PyPI。
         # 两种认证方式，任选其一：
         #
         # 方式 A — OIDC Trusted Publishing（推荐，无需 token）
@@ -46,3 +73,11 @@ jobs:
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
           skip-existing: true
+
+      # 回读断言：skip-existing 可能掩盖「版本没上去」，这里要求每个包在
+      # PyPI 上的 latest 都等于本次 tag，否则整个 job 失败。
+      - name: Verify PyPI now serves this version
+        run: |
+          python3 .github/scripts/check_pypi_versions.py \
+            --version "${{ github.event.release.tag_name || inputs.tag }}" \
+            --retries 12 --delay 15

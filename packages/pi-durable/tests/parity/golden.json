@@ -1,0 +1,766 @@
+{
+ "jsdiffVersion": "8.0.4",
+ "note": "由 generate-golden.js 用真 diff@8.0.4 生成；小语料存全量，大语料只存 sha256（输入由配方重建）",
+ "small": [
+  {
+   "name": "identical",
+   "old": "a\nb\nc\n",
+   "new": "a\nb\nc\n",
+   "diffLines": [
+    {
+     "value": "a\nb\nc\n",
+     "added": false,
+     "removed": false,
+     "count": 3
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n"
+  },
+  {
+   "name": "insert-middle",
+   "old": "a\nc\n",
+   "new": "a\nb\nc\n",
+   "diffLines": [
+    {
+     "value": "a\n",
+     "added": false,
+     "removed": false,
+     "count": 1
+    },
+    {
+     "value": "b\n",
+     "added": true,
+     "removed": false,
+     "count": 1
+    },
+    {
+     "value": "c\n",
+     "added": false,
+     "removed": false,
+     "count": 1
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -1,2 +1,3 @@\n a\n+b\n c\n"
+  },
+  {
+   "name": "delete-middle",
+   "old": "a\nb\nc\n",
+   "new": "a\nc\n",
+   "diffLines": [
+    {
+     "value": "a\n",
+     "added": false,
+     "removed": false,
+     "count": 1
+    },
+    {
+     "value": "b\n",
+     "added": false,
+     "removed": true,
+     "count": 1
+    },
+    {
+     "value": "c\n",
+     "added": false,
+     "removed": false,
+     "count": 1
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -1,3 +1,2 @@\n a\n-b\n c\n"
+  },
+  {
+   "name": "replace-one",
+   "old": "a\nb\nc\n",
+   "new": "a\nB\nc\n",
+   "diffLines": [
+    {
+     "value": "a\n",
+     "added": false,
+     "removed": false,
+     "count": 1
+    },
+    {
+     "value": "b\n",
+     "added": false,
+     "removed": true,
+     "count": 1
+    },
+    {
+     "value": "B\n",
+     "added": true,
+     "removed": false,
+     "count": 1
+    },
+    {
+     "value": "c\n",
+     "added": false,
+     "removed": false,
+     "count": 1
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n"
+  },
+  {
+   "name": "replace-multi",
+   "old": "a\nb\nc\nd\n",
+   "new": "a\nX\nY\nd\n",
+   "diffLines": [
+    {
+     "value": "a\n",
+     "added": false,
+     "removed": false,
+     "count": 1
+    },
+    {
+     "value": "b\nc\n",
+     "added": false,
+     "removed": true,
+     "count": 2
+    },
+    {
+     "value": "X\nY\n",
+     "added": true,
+     "removed": false,
+     "count": 2
+    },
+    {
+     "value": "d\n",
+     "added": false,
+     "removed": false,
+     "count": 1
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -1,4 +1,4 @@\n a\n-b\n-c\n+X\n+Y\n d\n"
+  },
+  {
+   "name": "two-changes-far",
+   "old": "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\n",
+   "new": "a\nB\nc\nd\ne\nf\ng\nh\ni\nj\nK\nl\n",
+   "diffLines": [
+    {
+     "value": "a\n",
+     "added": false,
+     "removed": false,
+     "count": 1
+    },
+    {
+     "value": "b\n",
+     "added": false,
+     "removed": true,
+     "count": 1
+    },
+    {
+     "value": "B\n",
+     "added": true,
+     "removed": false,
+     "count": 1
+    },
+    {
+     "value": "c\nd\ne\nf\ng\nh\ni\nj\n",
+     "added": false,
+     "removed": false,
+     "count": 8
+    },
+    {
+     "value": "k\n",
+     "added": false,
+     "removed": true,
+     "count": 1
+    },
+    {
+     "value": "K\n",
+     "added": true,
+     "removed": false,
+     "count": 1
+    },
+    {
+     "value": "l\n",
+     "added": false,
+     "removed": false,
+     "count": 1
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -1,12 +1,12 @@\n a\n-b\n+B\n c\n d\n e\n f\n g\n h\n i\n j\n-k\n+K\n l\n"
+  },
+  {
+   "name": "two-changes-adjacent",
+   "old": "a\nb\nc\n",
+   "new": "A\nB\nc\n",
+   "diffLines": [
+    {
+     "value": "a\nb\n",
+     "added": false,
+     "removed": true,
+     "count": 2
+    },
+    {
+     "value": "A\nB\n",
+     "added": true,
+     "removed": false,
+     "count": 2
+    },
+    {
+     "value": "c\n",
+     "added": false,
+     "removed": false,
+     "count": 1
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -1,3 +1,3 @@\n-a\n-b\n+A\n+B\n c\n"
+  },
+  {
+   "name": "change-at-start",
+   "old": "a\nb\nc\n",
+   "new": "A\nb\nc\n",
+   "diffLines": [
+    {
+     "value": "a\n",
+     "added": false,
+     "removed": true,
+     "count": 1
+    },
+    {
+     "value": "A\n",
+     "added": true,
+     "removed": false,
+     "count": 1
+    },
+    {
+     "value": "b\nc\n",
+     "added": false,
+     "removed": false,
+     "count": 2
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -1,3 +1,3 @@\n-a\n+A\n b\n c\n"
+  },
+  {
+   "name": "change-at-end",
+   "old": "a\nb\nc\n",
+   "new": "a\nb\nC\n",
+   "diffLines": [
+    {
+     "value": "a\nb\n",
+     "added": false,
+     "removed": false,
+     "count": 2
+    },
+    {
+     "value": "c\n",
+     "added": false,
+     "removed": true,
+     "count": 1
+    },
+    {
+     "value": "C\n",
+     "added": true,
+     "removed": false,
+     "count": 1
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -1,3 +1,3 @@\n a\n b\n-c\n+C\n"
+  },
+  {
+   "name": "empty-old",
+   "old": "",
+   "new": "a\nb\n",
+   "diffLines": [
+    {
+     "value": "a\nb\n",
+     "added": true,
+     "removed": false,
+     "count": 2
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -0,0 +1,2 @@\n+a\n+b\n"
+  },
+  {
+   "name": "empty-new",
+   "old": "a\nb\n",
+   "new": "",
+   "diffLines": [
+    {
+     "value": "a\nb\n",
+     "added": false,
+     "removed": true,
+     "count": 2
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -1,2 +0,0 @@\n-a\n-b\n"
+  },
+  {
+   "name": "both-empty",
+   "old": "",
+   "new": "",
+   "diffLines": [],
+   "patch": "--- f.txt\n+++ f.txt\n"
+  },
+  {
+   "name": "no-trailing-newline",
+   "old": "a\nb",
+   "new": "a\nB",
+   "diffLines": [
+    {
+     "value": "a\n",
+     "added": false,
+     "removed": false,
+     "count": 1
+    },
+    {
+     "value": "b",
+     "added": false,
+     "removed": true,
+     "count": 1
+    },
+    {
+     "value": "B",
+     "added": true,
+     "removed": false,
+     "count": 1
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+B\n\\ No newline at end of file\n"
+  },
+  {
+   "name": "trailing-added",
+   "old": "a\nb",
+   "new": "a\nb\n",
+   "diffLines": [
+    {
+     "value": "a\n",
+     "added": false,
+     "removed": false,
+     "count": 1
+    },
+    {
+     "value": "b",
+     "added": false,
+     "removed": true,
+     "count": 1
+    },
+    {
+     "value": "b\n",
+     "added": true,
+     "removed": false,
+     "count": 1
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+b\n"
+  },
+  {
+   "name": "trailing-removed",
+   "old": "a\nb\n",
+   "new": "a\nb",
+   "diffLines": [
+    {
+     "value": "a\n",
+     "added": false,
+     "removed": false,
+     "count": 1
+    },
+    {
+     "value": "b\n",
+     "added": false,
+     "removed": true,
+     "count": 1
+    },
+    {
+     "value": "b",
+     "added": true,
+     "removed": false,
+     "count": 1
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -1,2 +1,2 @@\n a\n-b\n+b\n\\ No newline at end of file\n"
+  },
+  {
+   "name": "crlf",
+   "old": "a\r\nb\r\n",
+   "new": "a\r\nB\r\n",
+   "diffLines": [
+    {
+     "value": "a\r\n",
+     "added": false,
+     "removed": false,
+     "count": 1
+    },
+    {
+     "value": "b\r\n",
+     "added": false,
+     "removed": true,
+     "count": 1
+    },
+    {
+     "value": "B\r\n",
+     "added": true,
+     "removed": false,
+     "count": 1
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -1,2 +1,2 @@\n a\r\n-b\r\n+B\r\n"
+  },
+  {
+   "name": "unicode",
+   "old": "中文\n行二\n",
+   "new": "中文\n第二行\n",
+   "diffLines": [
+    {
+     "value": "中文\n",
+     "added": false,
+     "removed": false,
+     "count": 1
+    },
+    {
+     "value": "行二\n",
+     "added": false,
+     "removed": true,
+     "count": 1
+    },
+    {
+     "value": "第二行\n",
+     "added": true,
+     "removed": false,
+     "count": 1
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -1,2 +1,2 @@\n 中文\n-行二\n+第二行\n"
+  },
+  {
+   "name": "emoji",
+   "old": "a\n🙂\n",
+   "new": "a\n🎉\n",
+   "diffLines": [
+    {
+     "value": "a\n",
+     "added": false,
+     "removed": false,
+     "count": 1
+    },
+    {
+     "value": "🙂\n",
+     "added": false,
+     "removed": true,
+     "count": 1
+    },
+    {
+     "value": "🎉\n",
+     "added": true,
+     "removed": false,
+     "count": 1
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -1,2 +1,2 @@\n a\n-🙂\n+🎉\n"
+  },
+  {
+   "name": "context-exactly-4",
+   "old": "1\n2\n3\n4\nX\n5\n6\n7\n8\n",
+   "new": "1\n2\n3\n4\nY\n5\n6\n7\n8\n",
+   "diffLines": [
+    {
+     "value": "1\n2\n3\n4\n",
+     "added": false,
+     "removed": false,
+     "count": 4
+    },
+    {
+     "value": "X\n",
+     "added": false,
+     "removed": true,
+     "count": 1
+    },
+    {
+     "value": "Y\n",
+     "added": true,
+     "removed": false,
+     "count": 1
+    },
+    {
+     "value": "5\n6\n7\n8\n",
+     "added": false,
+     "removed": false,
+     "count": 4
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -1,9 +1,9 @@\n 1\n 2\n 3\n 4\n-X\n+Y\n 5\n 6\n 7\n 8\n"
+  },
+  {
+   "name": "context-5-each-side",
+   "old": "1\n2\n3\n4\n5\nX\n6\n7\n8\n9\n10\n",
+   "new": "1\n2\n3\n4\n5\nY\n6\n7\n8\n9\n10\n",
+   "diffLines": [
+    {
+     "value": "1\n2\n3\n4\n5\n",
+     "added": false,
+     "removed": false,
+     "count": 5
+    },
+    {
+     "value": "X\n",
+     "added": false,
+     "removed": true,
+     "count": 1
+    },
+    {
+     "value": "Y\n",
+     "added": true,
+     "removed": false,
+     "count": 1
+    },
+    {
+     "value": "6\n7\n8\n9\n10\n",
+     "added": false,
+     "removed": false,
+     "count": 5
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -2,9 +2,9 @@\n 2\n 3\n 4\n 5\n-X\n+Y\n 6\n 7\n 8\n 9\n"
+  },
+  {
+   "name": "context-10-each-side",
+   "old": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\nX\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n",
+   "new": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\nY\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n",
+   "diffLines": [
+    {
+     "value": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n",
+     "added": false,
+     "removed": false,
+     "count": 10
+    },
+    {
+     "value": "X\n",
+     "added": false,
+     "removed": true,
+     "count": 1
+    },
+    {
+     "value": "Y\n",
+     "added": true,
+     "removed": false,
+     "count": 1
+    },
+    {
+     "value": "11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n",
+     "added": false,
+     "removed": false,
+     "count": 10
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -7,9 +7,9 @@\n 7\n 8\n 9\n 10\n-X\n+Y\n 11\n 12\n 13\n 14\n"
+  },
+  {
+   "name": "blank-lines",
+   "old": "a\n\n\nb\n",
+   "new": "a\n\nb\n",
+   "diffLines": [
+    {
+     "value": "a\n\n",
+     "added": false,
+     "removed": false,
+     "count": 2
+    },
+    {
+     "value": "\n",
+     "added": false,
+     "removed": true,
+     "count": 1
+    },
+    {
+     "value": "b\n",
+     "added": false,
+     "removed": false,
+     "count": 1
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -1,4 +1,3 @@\n a\n \n-\n b\n"
+  },
+  {
+   "name": "whole-file-replace",
+   "old": "a\nb\n",
+   "new": "x\ny\n",
+   "diffLines": [
+    {
+     "value": "a\nb\n",
+     "added": false,
+     "removed": true,
+     "count": 2
+    },
+    {
+     "value": "x\ny\n",
+     "added": true,
+     "removed": false,
+     "count": 2
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -1,2 +1,2 @@\n-a\n-b\n+x\n+y\n"
+  },
+  {
+   "name": "many-lines",
+   "old": "line0\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\nline16\nline17\nline18\nline19\nline20\nline21\nline22\nline23\nline24\nline25\nline26\nline27\nline28\nline29\n",
+   "new": "line0\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nCHANGED\nline16\nline17\nline18\nline19\nline20\nline21\nline22\nline23\nline24\nline25\nline26\nline27\nline28\nline29\n",
+   "diffLines": [
+    {
+     "value": "line0\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\n",
+     "added": false,
+     "removed": false,
+     "count": 15
+    },
+    {
+     "value": "line15\n",
+     "added": false,
+     "removed": true,
+     "count": 1
+    },
+    {
+     "value": "CHANGED\n",
+     "added": true,
+     "removed": false,
+     "count": 1
+    },
+    {
+     "value": "line16\nline17\nline18\nline19\nline20\nline21\nline22\nline23\nline24\nline25\nline26\nline27\nline28\nline29\n",
+     "added": false,
+     "removed": false,
+     "count": 14
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -12,9 +12,9 @@\n line11\n line12\n line13\n line14\n-line15\n+CHANGED\n line16\n line17\n line18\n line19\n"
+  },
+  {
+   "name": "dup-lines",
+   "old": "a\na\na\n",
+   "new": "a\na\n",
+   "diffLines": [
+    {
+     "value": "a\na\n",
+     "added": false,
+     "removed": false,
+     "count": 2
+    },
+    {
+     "value": "a\n",
+     "added": false,
+     "removed": true,
+     "count": 1
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -1,3 +1,2 @@\n a\n a\n-a\n"
+  },
+  {
+   "name": "interleaved",
+   "old": "a\nb\nc\nd\ne\n",
+   "new": "b\na\nd\nc\ne\n",
+   "diffLines": [
+    {
+     "value": "a\n",
+     "added": false,
+     "removed": true,
+     "count": 1
+    },
+    {
+     "value": "b\n",
+     "added": false,
+     "removed": false,
+     "count": 1
+    },
+    {
+     "value": "c\n",
+     "added": false,
+     "removed": true,
+     "count": 1
+    },
+    {
+     "value": "a\n",
+     "added": true,
+     "removed": false,
+     "count": 1
+    },
+    {
+     "value": "d\n",
+     "added": false,
+     "removed": false,
+     "count": 1
+    },
+    {
+     "value": "c\n",
+     "added": true,
+     "removed": false,
+     "count": 1
+    },
+    {
+     "value": "e\n",
+     "added": false,
+     "removed": false,
+     "count": 1
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -1,5 +1,5 @@\n-a\n b\n-c\n+a\n d\n+c\n e\n"
+  },
+  {
+   "name": "bare-cr",
+   "old": "a\rb\r",
+   "new": "a\rB\r",
+   "diffLines": [
+    {
+     "value": "a\rb\r",
+     "added": false,
+     "removed": true,
+     "count": 1
+    },
+    {
+     "value": "a\rB\r",
+     "added": true,
+     "removed": false,
+     "count": 1
+    }
+   ],
+   "patch": "--- f.txt\n+++ f.txt\n@@ -1,1 +1,1 @@\n-a\rb\r\n\\ No newline at end of file\n+a\rB\r\n\\ No newline at end of file\n"
+  }
+ ],
+ "big": [
+  {
+   "name": "big-100-one-change",
+   "diffLinesSha256": "33e1c593112455ec5c780e143d43d1250dcf5469ebf77978eb7cd9cae51c37ae",
+   "patchSha256": "e815404eee246a950c350cc481d871c39c5f84b55bad13c743c18fec7e5ec9f9"
+  },
+  {
+   "name": "big-201-one-change",
+   "diffLinesSha256": "84ac7c515e45ec62c890d4dc24e0a98fe154aa49c359dd152a7ecde09eab534e",
+   "patchSha256": "7ea25c208e343c98726d4440b1648e42886d083cadf16958fc2cb822bbf9df84"
+  },
+  {
+   "name": "big-250-one-change",
+   "diffLinesSha256": "60265d8afb70af8c72f91c89433250644a5b9606aad72970dfc463eaff977d68",
+   "patchSha256": "b60f24f1bbaf525e3d44a4f735503c1e0310d7e072a5107c9a678629d88c42ae"
+  },
+  {
+   "name": "big-500-one-change",
+   "diffLinesSha256": "9bd2e55bd9c658b2a92fa5ceef5c6e60ffcb31901bb67ef675f4e98b15fb6fc7",
+   "patchSha256": "d83dbfb3925bfb1357997ff9a26f19957467b0e9b9e6a68c2f9e8319a972d159"
+  },
+  {
+   "name": "big-1200-one-change",
+   "diffLinesSha256": "21a854422803cff4171424774706b27246bf7e048ffc0d1dc88a985c14f22cba",
+   "patchSha256": "8ed1e259d2c77c6658630aceb7c84ff2a30c0c7495b0cfd215419030e31efaac"
+  },
+  {
+   "name": "big-300-ends",
+   "diffLinesSha256": "6ca1e863ef28e9834ba6b30dbe14a1250c1ad78174e6cec70208813841674d40",
+   "patchSha256": "3bbf47e6762b860cab2a88119ab5832fa512d08afa801afe1c14f1da7c3a4e16"
+  },
+  {
+   "name": "big-repeat-heavy",
+   "diffLinesSha256": "1cba0439e61ea54c52596a1a3177a1fe30d8de9edac86690ce54922da5aaa43f",
+   "patchSha256": "660539643125d3c59f5e2f7053aaf23bb0af5eec60a26036b26eb28b1f00a1b5"
+  },
+  {
+   "name": "big-bulk-insert",
+   "diffLinesSha256": "c2aa561d4cc8cd536e2f2209f7c1860973bfedbd8b676ac65d6b979af8233b26",
+   "patchSha256": "0a3b797cb180a0517f478984c43a9e370a353689f9ba2c7eed9b9bb27de267b2"
+  },
+  {
+   "name": "big-moved-line",
+   "diffLinesSha256": "eff330a6836500b57c385cd65542c8b7490c6337443af9cd5dc18d890c4dd7cf",
+   "patchSha256": "38358fc5b1dfa80e8d4c0404e4e13e7f9dbc6277e5d0f1b37645edf807c6c61c"
+  }
+ ]
+}

@@ -18,6 +18,7 @@ from pi_ai import (
     Tool,
     ToolCall,
     UserMessage,
+    normalize_context,
 )
 from pi_ai.events import ErrorEvent, StartEvent, ToolCallDeltaEvent
 from pi_ai.providers import openai_provider
@@ -242,7 +243,7 @@ def test_convert_messages_replays_grammar_tool_as_custom_call():
         ]
     )
 
-    messages, _ = _convert_messages(context, {"sql": "query"})
+    messages, _ = _convert_messages(normalize_context(context), _make_model(), {"sql": "query"})
 
     assert messages[0]["tool_calls"] == [
         {
@@ -624,7 +625,7 @@ def test_convert_messages_replays_signed_reasoning_details():
         ]
     )
 
-    messages, _ = _convert_messages(context)
+    messages, _ = _convert_messages(normalize_context(context), _make_model())
 
     assert messages[1]["reasoning_details"] == details
 
@@ -648,7 +649,7 @@ def test_convert_messages_replays_legacy_encrypted_reasoning_detail():
         ]
     )
 
-    messages, _ = _convert_messages(context)
+    messages, _ = _convert_messages(normalize_context(context), _make_model())
 
     assert messages[0]["reasoning_details"] == [legacy]
 
@@ -667,7 +668,7 @@ def test_convert_messages_no_reasoning_details_when_absent():
         ]
     )
 
-    messages, _ = _convert_messages(context)
+    messages, _ = _convert_messages(normalize_context(context), _make_model())
 
     assert "reasoning_details" not in messages[0]
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import email.utils
+import math
 import random
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -60,22 +61,62 @@ def _validate_delay(delay_ms: float, maximum: int | None, message: str) -> float
     return max(0, delay_ms)
 
 
+def _parse_retry_after_ms_header(value: str | None) -> float | None:
+    """解析 ``retry-after-ms`` 头（**值已是毫秒**），不可解析时返回 None。
+
+    对应上游 ``Number.isFinite`` 守卫（utils/provider-retry.ts:55-58，issue #9571）。
+
+    v0.85.1 本端缺陷：``float("nan")`` 不抛异常，``nan > max`` 为 False，经
+    ``max(0, nan)`` 得到 **0** → "立即重试"形成热循环；``inf`` 则 ``inf > max``
+    为 True → 抛 RuntimeError 打断重试循环。两者都应视为"不可解析"而回退指数退避。
+    """
+    if value is None:
+        return None
+    try:
+        milliseconds = float(value)
+    except ValueError:
+        return None
+    return milliseconds if math.isfinite(milliseconds) else None
+
+
+def _parse_retry_after_header(value: str | None) -> float | None:
+    """解析 ``retry-after`` 头（**秒数**或 HTTP 日期），返回毫秒，失败返回 None。
+
+    对应上游 utils/provider-retry.ts:60-65：先按秒数解析，失败再按 HTTP 日期
+    （``Date.parse``）解析，两者都得不到有限值则返回 None。
+
+    v0.85.1 本端缺陷：``nan`` 同上得 0；日期不可解析时
+    ``email.utils.parsedate_to_datetime`` 在 Python 3.10+ **抛 ValueError**，
+    该异常会穿透 ``_retry_delay_ms`` 逃出 ``retry_provider_request``，用无关异常
+    取代原有 provider 错误。
+    """
+    if value is None:
+        return None
+    try:
+        milliseconds = float(value) * 1000
+        if math.isfinite(milliseconds):
+            return milliseconds
+    except ValueError:
+        pass
+    try:
+        parsed = email.utils.parsedate_to_datetime(value)
+    except (ValueError, TypeError, OverflowError):
+        return None
+    try:
+        milliseconds = parsed.timestamp() * 1000 - time.time() * 1000
+    except (OverflowError, OSError, ValueError):
+        return None
+    return milliseconds if math.isfinite(milliseconds) else None
+
+
 def _retry_delay_ms(error: BaseException, retry_index: int, maximum: int | None) -> float:
     headers = _headers(error)
-    retry_after_ms = _header(headers, "retry-after-ms")
+    retry_after_ms = _parse_retry_after_ms_header(_header(headers, "retry-after-ms"))
     if retry_after_ms is not None:
-        try:
-            return _validate_delay(float(retry_after_ms), maximum, str(error))
-        except ValueError:
-            pass
-    retry_after = _header(headers, "retry-after")
+        return _validate_delay(retry_after_ms, maximum, str(error))
+    retry_after = _parse_retry_after_header(_header(headers, "retry-after"))
     if retry_after is not None:
-        try:
-            delay = float(retry_after) * 1000
-        except ValueError:
-            parsed = email.utils.parsedate_to_datetime(retry_after)
-            delay = float(parsed.timestamp()) * 1000 - time.time() * 1000
-        return _validate_delay(delay, maximum, str(error))
+        return _validate_delay(retry_after, maximum, str(error))
     exponential = min(0.5 * (2**retry_index), 8) * 1000
     return float(exponential * (1 - random.random() * 0.25))
 
@@ -101,7 +142,14 @@ async def retry_provider_request(
     max_retries: int = 0,
     max_retry_delay_ms: int | None = None,
     cancel_event: asyncio.Event | None = None,
+    no_retry_statuses: tuple[int, ...] | None = None,
 ) -> T:
+    """带可取消退避的 provider 请求重试。
+
+    ``no_retry_statuses`` 是 v1.3.0 新增（上游 utils/provider-retry.ts:8）：这些
+    HTTP 状态码**立即失败**，即使默认策略本会重试它们（如 503 携带
+    ``x-should-retry: true``）。
+    """
     retries_remaining = max_retries
     while True:
         try:
@@ -112,6 +160,9 @@ async def retry_provider_request(
             if cancel_event is not None and cancel_event.is_set():
                 raise asyncio.CancelledError from error
             if retries_remaining <= 0 or not _is_retryable(error):
+                raise
+            status = _status(error)
+            if no_retry_statuses and status is not None and status in no_retry_statuses:
                 raise
             retry_index = max_retries - retries_remaining
             retries_remaining -= 1

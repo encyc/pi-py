@@ -87,8 +87,9 @@ class AgentOptions:
         get_api_key: Any = None,
         before_tool_call: Any = None,
         after_tool_call: Any = None,
+        prepare_request: Any = None,
         prepare_next_turn: Any = None,
-        should_stop_after_turn: Any = None,
+        finish_turn: Any = None,
         steering_mode: QueueMode = "one-at-a-time",
         follow_up_mode: QueueMode = "one-at-a-time",
         tool_execution: ToolExecutionMode = "parallel",
@@ -101,7 +102,11 @@ class AgentOptions:
             self.initial_state = AgentState()
             if initial_state:
                 for k, v in initial_state.items():
-                    setattr(self.initial_state, k, v)
+                    # system_prompt 只读：只有构造期可以通过初始状态写入
+                    if k == "system_prompt":
+                        self.initial_state._init_system_prompt(v)
+                    else:
+                        setattr(self.initial_state, k, v)
 
         self.convert_to_llm = convert_to_llm
         self.transform_context = transform_context
@@ -109,8 +114,9 @@ class AgentOptions:
         self.get_api_key = get_api_key
         self.before_tool_call = before_tool_call
         self.after_tool_call = after_tool_call
+        self.prepare_request = prepare_request
         self.prepare_next_turn = prepare_next_turn
-        self.should_stop_after_turn = should_stop_after_turn
+        self.finish_turn = finish_turn
         self.steering_mode = steering_mode
         self.follow_up_mode = follow_up_mode
         self.tool_execution = tool_execution
@@ -129,8 +135,9 @@ class Agent:
         self._get_api_key = opts.get_api_key
         self._before_tool_call = opts.before_tool_call
         self._after_tool_call = opts.after_tool_call
+        self._prepare_request = opts.prepare_request
         self._prepare_next_turn = opts.prepare_next_turn
-        self._should_stop_after_turn = opts.should_stop_after_turn
+        self._finish_turn = opts.finish_turn
         self._tool_execution = opts.tool_execution
 
         self.steering_queue = _PendingMessageQueue(opts.steering_mode)
@@ -270,17 +277,13 @@ class Agent:
             before_tool_call=self._before_tool_call,
             after_tool_call=self._after_tool_call,
         )
-        # should_stop_after_turn：把 Agent 级回调包成 loop 级钩子
-        if self._should_stop_after_turn:
-            hook = self._should_stop_after_turn
-
-            async def _should_stop_after_turn(ctx: dict[str, Any]) -> bool:
-                result = hook(ctx)
-                if inspect.isawaitable(result):
-                    result = await result
-                return bool(result)
-
-            cfg.should_stop_after_turn = _should_stop_after_turn
+        # 把 Agent 级回调直接透传给 loop 级钩子（loop 侧统一归一化返回值）
+        if self._prepare_request:
+            cfg.prepare_request = self._prepare_request
+        if self._prepare_next_turn:
+            cfg.prepare_next_turn = self._prepare_next_turn
+        if self._finish_turn:
+            cfg.finish_turn = self._finish_turn
         cfg.reasoning = self._state.thinking_level or None
         # 用闭包接 steering/follow-up 队列
         _skip = [skip_initial_steering]

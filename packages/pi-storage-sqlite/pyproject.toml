@@ -1,18 +1,19 @@
 [project]
 name = "pi-py-storage-sqlite"
 version = "0.85.1"
-description = "Python port of @earendil-works/pi-storage-sqlite-node — SQLite session storage backend"
+description = "【已废弃】转发到 pi-py-durable —— 上游对应包已于 v1.2.0 删除"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
 authors = [{ name = "Justin Gao" }]
 dependencies = [
-    "pi-py-ai>=0.85.1,<0.86",
-    "pi-py-agent-core>=0.85.1,<0.86",
+    # 转发壳：旧数据模型在新实现里没有对应物，因此本包只重导出 pi-durable 的
+    # SQLite 后端（见 PORTING.md 的并入说明）。
+    "pi-py-durable",
 ]
 
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 7 - Inactive",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
@@ -34,6 +35,3 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pi_storage_sqlite"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"src/pi_storage_sqlite/migrations.sql" = "pi_storage_sqlite/migrations.sql"

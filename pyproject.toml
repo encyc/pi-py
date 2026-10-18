@@ -13,9 +13,12 @@ private = true
 dependencies = [
     "pi-py-ai",
     "pi-py-agent-core",
+    "pi-py-chord",
+    "pi-py-durable",
+    "pi-py-codemode",
     "pi-py-storage-sqlite",
     "pi-py-coding-agent",
-    "pi-py-server",
+    "pi-py-mcp",
 ]
 
 # ---- 开发依赖(质量工具 + 测试), 所有子包共享 ----
@@ -38,9 +41,12 @@ members = ["packages/*"]
 # 包间依赖走 workspace, 而非从 PyPI 解析
 pi-py-ai = { workspace = true }
 pi-py-agent-core = { workspace = true }
+pi-py-chord = { workspace = true }
+pi-py-durable = { workspace = true }
+pi-py-codemode = { workspace = true }
 pi-py-storage-sqlite = { workspace = true }
 pi-py-coding-agent = { workspace = true }
-pi-py-server = { workspace = true }
+pi-py-mcp = { workspace = true }
 
 # ============================================
 # 共享质量工具配置
@@ -59,16 +65,18 @@ select = ["E", "F", "I", "N", "UP", "B", "SIM", "ASYNC"]
 ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
-# 测试里允许未用导入/fixture 等
-"tests/**" = ["F401", "F841"]
+# 测试里允许未用导入/fixture 等。
+# ⚠️ 必须写成 "packages/*/tests/**"：ruff 的 pattern 相对**仓库根**匹配，
+# 原写法 "tests/**" 只匹配 <root>/tests/，而本仓测试都在 packages/<pkg>/tests/ 下，
+# 因此那条 ignore 长期**静默失效**（2026-10-18 用探针文件实测确认：3 个错误未被忽略）。
+"packages/*/tests/**" = ["F401", "F841"]
 # coding-agent 工具: 在 async 函数中使用阻塞文件 I/O 是有意的权衡
 # （上游 Node.js 也是同步 fs，工具执行快，不值得 asyncio.to_thread 包装）。
 # SIM105（try-except-pass 杀进程）也是有意为之。
 "packages/pi-coding-agent/src/pi_coding_agent/tools.py" = ["ASYNC230", "ASYNC240", "SIM105", "SIM108"]
-# server: async 函数中使用 os.path（socket 文件管理）和 try-except-pass（进程管理）
-"packages/pi-server/src/pi_server/ipc.py" = ["ASYNC240", "SIM105"]
-"packages/pi-server/src/pi_server/supervisor.py" = ["SIM105"]
-"packages/pi-server/tests/test_server.py" = ["SIM105"]
+# pi-mcp 测试的 HTTP 夹具: BaseHTTPRequestHandler 按名字分发 do_GET/do_POST/do_DELETE，
+# 是框架契约而非命名风格问题。
+"packages/pi-mcp/tests/helpers.py" = ["N815"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -79,12 +87,15 @@ python_version = "3.11"
 mypy_path = [
     "packages/pi-ai/src",
     "packages/pi-agent-core/src",
+    "packages/pi-chord/src",
+    "packages/pi-durable/src",
+    "packages/pi-codemode/src",
     "packages/pi-storage-sqlite/src",
     "packages/pi-coding-agent/src",
-    "packages/pi-server/src",
+    "packages/pi-mcp/src",
 ]
 # monorepo 多包: 只严格检查 src/ 源码(测试目录有同名模块, 单独用宽松配置处理)
-files = ["packages/pi-ai/src", "packages/pi-agent-core/src", "packages/pi-storage-sqlite/src", "packages/pi-coding-agent/src", "packages/pi-server/src"]
+files = ["packages/pi-ai/src", "packages/pi-agent-core/src", "packages/pi-chord/src", "packages/pi-durable/src", "packages/pi-codemode/src", "packages/pi-storage-sqlite/src", "packages/pi-coding-agent/src", "packages/pi-mcp/src"]
 strict = true
 warn_return_any = true
 warn_unused_configs = true

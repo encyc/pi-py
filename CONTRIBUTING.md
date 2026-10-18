@@ -19,13 +19,21 @@ uv run pytest    # 确保测试通过
 
 2. **编码**：遵循现有代码风格（ruff 会自动检查）
 
-3. **本地验证**：
+3. **本地验证**（与 `.github/workflows/ci.yml` 完全一致）：
    ```bash
-   uv run ruff check     # lint
-   uv run ruff format    # 格式化
-   uv run mypy           # 类型检查（strict）
-   uv run pytest         # 单元测试
+   uv sync --all-packages --all-extras
+   uv run ruff check packages/ .github/scripts/
+   uv run ruff format --check packages/ .github/scripts/
+   uv run mypy                     # 用 [tool.mypy].files，不要加 packages 参数
+   uv run pytest -q                # 单元测试（默认跳过 integration）
    ```
+   注意：`uv run mypy packages` 会把各包同名测试模块一起拉进来，报
+   `Duplicate module named "test_integration"`——这不是类型缺陷，用 `uv run mypy` 即可。
+
+   注意：`uv sync` **必须带 `--all-packages --all-extras`**。只写 `--all-extras` 不够
+   （它只作用于根项目的 extras）；不带 extras 时 `pi-durable[images]` 的 Pillow 不会装，
+   `mypy` 会报 `Cannot find implementation or library stub for module named "PIL"`，
+   且那条路径的测试会静默 skip。
 
 4. **提交**：推荐 [Conventional Commits](https://www.conventionalcommits.org/) 格式
    ```
@@ -40,16 +48,22 @@ uv run pytest    # 确保测试通过
 ```
 pi-py/
 ├── packages/
-│   ├── pi-ai/            # 统一 LLM API（OpenAI + Anthropic + retry）
-│   ├── pi-agent-core/    # agent 循环引擎 + harness
+│   ├── pi-ai/             # 统一 LLM API（OpenAI + Anthropic + retry）
+│   ├── pi-chord/          # invocation-scoped context microkernel
+│   ├── pi-durable/        # 可移植执行环境 + 会话存储
+│   ├── pi-agent-core/     # agent 循环引擎
 │   ├── pi-storage-sqlite/ # SQLite 会话存储
-│   ├── pi-coding-agent/  # 编码 agent SDK
-│   └── pi-server/        # agent 服务化
-├── SYNC.md               # 上游同步机制说明
-├── UPSTREAM_VERSION      # 当前对齐的上游版本
-├── pyproject.toml        # uv workspace 根配置
-└── .github/workflows/    # CI
+│   └── pi-coding-agent/   # 编码 agent SDK
+├── scripts/               # 上游扫描器（upstream_scan.py）
+├── .github/scripts/       # 发布检查脚本（tag/Release、版本、PyPI 回读）
+├── SYNC.md                # 上游同步机制说明
+├── UPSTREAM_VERSION       # 当前对齐的上游版本
+├── pyproject.toml         # uv workspace 根配置
+└── .github/workflows/     # CI / 发布 / 发布守卫
 ```
+
+> 上游 `server` / `protocol` / `client` 三个包已在 v1.2.0 被删除，本仓的
+> `pi-server` 因此于同期下线（见 `CHANGELOG.md`），不再发布。
 
 ## 代码风格
 
@@ -61,13 +75,46 @@ pi-py/
 
 ## 上游同步
 
-本项目追踪 [earendil-works/pi](https://github.com/earendil-works/pi)。
-同步策略见 [`SYNC.md`](./SYNC.md)。
+本项目追踪 [earendil-works/pi](https://github.com/earendil-works/pi)。完整规则见
+[`SYNC.md`](./SYNC.md)，要点：
 
-如果发现上游有新的变更需要同步，请：
-1. 参考 `SYNC.md` 的同步流程
-2. 更新 `UPSTREAM_VERSION`
-3. 更新对应包的 `PORTING.md`
+- **节拍**：每 2 周一次集中同步；扫描器命中「破坏性变更」时提前处理。**不再按上游
+  版本号（minor/patch）触发**——上游 1.x 的 patch 里也会出现 breaking，minor 也可能
+  只是 feature（依据与实测数据见 SYNC.md「为什么不再按版本号触发」）。
+- **触发源是上游各包的 `CHANGELOG.md`，不是 GitHub Release Notes**：后者以
+  TUI/coding-agent 为主，SDK 侧变更会被大量终端渲染条目淹没。
+- **扫描增量**：
+  ```bash
+  python3 scripts/upstream_scan.py          # 报告基线之后的增量与 Breaking
+  python3 scripts/upstream_scan.py --json   # 机器可读
+  ```
+- **映射会变**：上游包 → 本仓包的对应关系每轮都要重新确认（1.0 期间发生过拆包/并包；
+  `server`/`protocol`/`client` 已在上游 v1.2.0 删除）。
+- **收尾**：更新 `UPSTREAM_VERSION`、`SYNC.md` 同步历史、`README.md` 顶部状态表、
+  对应包的 `PORTING.md`（新增偏离必须写明原因与上游 `文件:行号`）。
+
+一轮同步算完成的条件（见 SYNC.md「完成判据」）：CI 的 5 条命令全绿、集成测试在
+DeepSeek 通道通过、扫描器不再报未处理的 Breaking（或已登记为「有意不跟」并说明理由）。
+
+## 发布
+
+打 tag 与建 GitHub Release **两件事都要做**：
+
+```bash
+git tag vX.Y.Z && git push origin vX.Y.Z
+gh release create vX.Y.Z --title vX.Y.Z --notes-file /tmp/notes.md
+```
+
+`publish.yml` 由 `release: published` 触发；只推 tag 不建 Release 不会有任何发布
+（v0.85.1 就是这样漏发的）。发布链路自带三道检查：
+
+- `release-guard.yml`：每天 + push `main` 时检查「有 tag 但无 Release」，命中即失败；
+- `publish.yml` 的 `verify-release`：校验 tag 存在、`packages/*` 版本 lockstep 与 tag
+  一致、`CHANGELOG.md` 有对应小节；
+- `publish.yml` 发布后回读 PyPI，要求每个包 latest 等于本次 tag（防止
+  `skip-existing` 掩盖「其实没传上去」）。
+
+补发历史版本：`Actions → Publish to PyPI → Run workflow`，填入已存在的 `tag`。
 
 ## 添加新 provider
 

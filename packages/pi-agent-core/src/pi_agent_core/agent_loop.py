@@ -18,7 +18,7 @@ import asyncio
 import inspect
 import time
 from dataclasses import replace
-from typing import Any
+from typing import Any, cast
 
 from pi_ai import (
     AssistantMessage,
@@ -42,9 +42,12 @@ from .types import (
     AgentTool,
     AgentToolCall,
     AgentToolResult,
+    AgentTurnContext,
+    AgentTurnDecision,
     MessageEndEvent,
     MessageStartEvent,
     MessageUpdateEvent,
+    PrepareRequestContext,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
     ToolExecutionUpdateEvent,
@@ -166,10 +169,15 @@ async def _run_loop(
 ) -> None:
     current_context = initial_context
     config = initial_config
-    last_completed_turn: dict[str, Any] | None = None
+    last_completed_turn: AgentTurnContext | None = None
+    #: finish_turn 返回 {"action": "continue"} 时置位：保证再发起一次「仅上下文」请求。
+    explicit_continuation = False
     pending_messages: list[AgentMessage] = await _safe_drain(config.get_steering_messages)
 
+    # 外层：agent 本应停止时检查 follow-up 消息
     while True:
+        # 注意：每轮外层循环都重置为 True（与上游一致），这样 explicit_continuation
+        # 走 continue 复活外层时，内层仍会执行「仅上下文」的那一次请求。
         has_more_tool_calls = True
 
         # 内层：tool calls + steering
@@ -181,21 +189,9 @@ async def _run_loop(
                 if config.prepare_next_turn:
                     snapshot = await _maybe_await(config.prepare_next_turn(last_completed_turn))
                     if snapshot:
-                        next_context = snapshot.get("context")
-                        if next_context is not None:
-                            current_context = next_context
-                        next_model = snapshot.get("model")
-                        thinking_level = snapshot.get("thinkingLevel")
-                        if next_model is not None or thinking_level is not None:
-                            config = replace(
-                                config,
-                                model=next_model if next_model is not None else config.model,
-                                reasoning=(
-                                    None
-                                    if thinking_level == "off"
-                                    else thinking_level or config.reasoning
-                                ),
-                            )
+                        current_context, config = _apply_turn_update(
+                            current_context, config, snapshot
+                        )
                 if not pending_messages:
                     pending_messages = await _safe_drain(config.get_steering_messages)
                 await _safe_emit(emit, TurnStartEvent())
@@ -209,14 +205,39 @@ async def _run_loop(
                     new_messages.append(message)
                 pending_messages = []
 
+            # v0.87.0：prepare_request —— 待处理消息已追加并发出之后、provider 请求之前
+            # 运行（含第一次请求），可替换本次请求的 context/model/thinking level。
+            if config.prepare_request:
+                request_update = await _maybe_await(
+                    config.prepare_request(
+                        PrepareRequestContext(
+                            context=current_context,
+                            model=config.model,
+                            thinking_level=config.reasoning or "off",
+                        ),
+                        cancel_event,
+                    )
+                )
+                if request_update:
+                    current_context, config = _apply_turn_update(
+                        current_context, config, request_update
+                    )
+
             # 流式拉取 assistant 响应
             message = await _stream_assistant_response(
                 current_context, config, cancel_event, emit, stream_fn
             )
             new_messages.append(message)
 
-            # 错误/中止：直接结束
+            # 错误/中止：硬退出。finish_turn 仍会被调用（上游语义），但其决策被忽略。
             if message.stop_reason in ("error", "aborted"):
+                last_completed_turn = AgentTurnContext(
+                    message=message,
+                    tool_results=[],
+                    context=current_context,
+                    new_messages=new_messages,
+                )
+                await _invoke_finish_turn(config, last_completed_turn, cancel_event)
                 await _safe_emit(emit, TurnEndEvent(message=message, tool_results=[]))
                 await _safe_emit(emit, AgentEndEvent(messages=new_messages))
                 return
@@ -241,41 +262,125 @@ async def _run_loop(
                     current_context.messages.append(result)
                     new_messages.append(result)
 
+            # v0.87.0：finish_turn 在 assistant + 全部工具结果定稿之后、turn_end 之前运行；
+            # 决策在 turn_end 之后生效。error/aborted 是硬退出，其决策被忽略。
+            last_completed_turn = AgentTurnContext(
+                message=message,
+                tool_results=tool_results,
+                context=current_context,
+                new_messages=new_messages,
+            )
+            decision = await _invoke_finish_turn(config, last_completed_turn, cancel_event)
             await _safe_emit(emit, TurnEndEvent(message=message, tool_results=tool_results))
 
-            # v0.85.1：记录已完成轮次上下文；should_stop_after_turn 先于
-            # prepare_next_turn 看到它（后者仅在循环继续时于下一轮开始前执行）。
-            last_completed_turn = {
-                "message": message,
-                "tool_results": tool_results,
-                "context": current_context,
-                "new_messages": new_messages,
-            }
+            if decision == "end":
+                await _safe_emit(emit, AgentEndEvent(messages=new_messages))
+                return
 
-            # 检查取消
+            # 检查取消（本端在 v0.85.1 加的保险；上游由 aborted 消息承载）
             if cancel_event is not None and cancel_event.is_set():
                 await _safe_emit(emit, AgentEndEvent(messages=new_messages))
                 return
 
-            # should_stop_after_turn（对齐 v0.84.1 引入、v0.85.1 调整时序）：
-            # 本轮结束后询问是否提前终止
-            if config.should_stop_after_turn:
-                stop = await _maybe_await(config.should_stop_after_turn(last_completed_turn))
-                if stop:
-                    await _safe_emit(emit, AgentEndEvent(messages=new_messages))
-                    return
-
-            # 再次拉取 steering
+            # {"action": "continue"} 只保证「有一次下一次请求」：工具结果 / steering 若已
+            # 自然选中下一轮，就由它们满足，不额外追加。
+            explicit_continuation = decision == "continue"
             pending_messages = await _safe_drain(config.get_steering_messages)
+            if has_more_tool_calls or pending_messages:
+                explicit_continuation = False
 
         # Agent 本应停止。检查 follow-up
         follow_ups = await _safe_drain(config.get_follow_up_messages)
         if follow_ups:
+            explicit_continuation = False
             pending_messages = follow_ups
             continue
+
+        # 没有自然选中的请求，用一次「仅上下文」回合兑现 continue 决策
+        if explicit_continuation:
+            explicit_continuation = False
+            continue
+
         break
 
     await _safe_emit(emit, AgentEndEvent(messages=new_messages))
+
+
+# ============================================================
+# 回合钩子辅助
+# ============================================================
+
+
+def _read_field(source: Any, *names: str) -> Any:
+    """从 dict / dataclass / 对象里按候选名读字段（兼容 snake_case 与上游 camelCase）。"""
+    for name in names:
+        if isinstance(source, dict):
+            if name in source:
+                return source[name]
+        elif hasattr(source, name):
+            return getattr(source, name)
+    return None
+
+
+def _apply_turn_update(
+    context: AgentContext,
+    config: AgentLoopConfig,
+    update: Any,
+) -> tuple[AgentContext, AgentLoopConfig]:
+    """把 ``prepare_next_turn`` / ``prepare_request`` 的返回值套用到运行时状态。
+
+    - ``context``：替换下一次请求的上下文。
+    - ``model``：替换模型。
+    - ``thinkingLevel`` / ``thinking_level``：``"off"`` 清除 reasoning，其余替换。
+      未提供（None）时保持原值。
+    """
+    next_context = _read_field(update, "context")
+    next_model = _read_field(update, "model")
+    thinking_level = _read_field(update, "thinkingLevel", "thinking_level")
+
+    if next_context is not None:
+        context = next_context
+
+    if next_model is None and thinking_level is None:
+        return context, config
+
+    return context, replace(
+        config,
+        model=next_model if next_model is not None else config.model,
+        reasoning=(
+            config.reasoning
+            if thinking_level is None
+            else (None if thinking_level == "off" else thinking_level)
+        ),
+    )
+
+
+async def _invoke_finish_turn(
+    config: AgentLoopConfig,
+    turn: AgentTurnContext,
+    cancel_event: asyncio.Event | None,
+) -> AgentTurnDecision | None:
+    """调用 ``finish_turn`` 并归一化其决策。
+
+    接受三种写法（对应上游 ``{ action: "end" | "continue" }``）：
+
+    - ``{"action": "end"}`` / ``{"action": "continue"}``（上游原样）
+    - ``"end"`` / ``"continue"``（Python 简写）
+    - ``True`` / ``False``（便于从已移除的 ``should_stop_after_turn`` 直接迁移）
+    """
+    if config.finish_turn is None:
+        return None
+    raw = await _maybe_await(config.finish_turn(turn, cancel_event))
+    if raw is None or raw is False:
+        return None
+    if raw is True:
+        return "end"
+    if isinstance(raw, str):
+        return cast("AgentTurnDecision", raw) if raw in ("end", "continue") else None
+    action = _read_field(raw, "action")
+    if action in ("end", "continue"):
+        return cast("AgentTurnDecision", action)
+    return None
 
 
 # ============================================================
@@ -594,6 +699,9 @@ async def _execute_single(
                         result.content = after["content"]
                     if "details" in after:
                         result.details = after["details"]
+                    structured = _read_field(after, "structured_content", "structuredContent")
+                    if structured is not None:
+                        result.structured_content = structured
                     if "is_error" in after:
                         is_error = after["is_error"]
                     if "terminate" in after:
@@ -602,6 +710,10 @@ async def _execute_single(
         except Exception as exc:  # noqa: BLE001
             result = _error_result(str(exc))
             is_error = True
+
+    # 返回值自报失败（不抛异常）：模型看到错误结果，details / structured_content 仍留给调用方。
+    if result.is_error:
+        is_error = True
 
     await _safe_emit(
         emit,
@@ -634,17 +746,24 @@ def _validate_args(tool: AgentTool, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _error_result(msg: str) -> AgentToolResult:
-    return AgentToolResult(content=[TextContent(text=msg)], details={"error": msg})
+    return AgentToolResult(content=[TextContent(text=msg)], details={"error": msg}, is_error=True)
 
 
 def _make_result_msg(
     tool_call: AgentToolCall, result: AgentToolResult, is_error: bool
 ) -> ToolResultMessage:
+    """AgentToolResult → transcript 的 ToolResultMessage。
+
+    注意：``structured_content`` **不写入 transcript**（对齐上游「Not sent to the model」），
+    它只通过 ``tool_execution_end`` 事件与 ``after_tool_call`` 钩子暴露给程序调用方。
+    """
     return ToolResultMessage(
         tool_call_id=tool_call.id,
         tool_name=tool_call.name,
         content=result.content,
         details=result.details,
+        usage=result.usage,
+        added_tool_names=result.added_tool_names,
         is_error=is_error,
         timestamp=int(time.time() * 1000),
     )

@@ -1,0 +1,266 @@
+{
+ "parseWwwAuthenticate:null": {},
+ "parseWwwAuthenticate:\"\"": {},
+ "parseWwwAuthenticate:\"Basic realm=x\"": {},
+ "parseWwwAuthenticate:\"Bearer scope=\\\"repo admin\\\", error=\\\"x\\\"\"": {
+  "scope": "repo admin",
+  "error": "x"
+ },
+ "parseWwwAuthenticate:\"Bearer scope=\\\"\\\"\"": {},
+ "parseWwwAuthenticate:\"DPoP scope=repo\"": {
+  "scope": "repo"
+ },
+ "parseWwwAuthenticate:\"Bearer resource_metadata=\\\"https://a.example/meta\\\"\"": {
+  "resourceMetadataUrl": "https://a.example/meta"
+ },
+ "parseWwwAuthenticate:\"Bearer resource_metadata=\\\":::\\\"\"": {},
+ "parseWwwAuthenticate:\"bearer error=\\\"insufficient_scope\\\", scope=\\\"a b\\\", error_description=\\\"why\\\"\"": {
+  "scope": "a b",
+  "error": "insufficient_scope",
+  "errorDescription": "why"
+ },
+ "parseWwwAuthenticate:\"Bearer resource_metadata=https://plain.example/meta\"": {
+  "resourceMetadataUrl": "https://plain.example/meta"
+ },
+ "parseWwwAuthenticate:\"Bearer scope=\\\"a,b\\\"\"": {
+  "scope": "a,b"
+ },
+ "parseWwwAuthenticate:\"Digest realm=\\\"x\\\"\"": {},
+ "parseWwwAuthenticate:\"Bearer error=\\\"\\\"\"": {},
+ "parseWwwAuthenticate:\"Bearer\"": {},
+ "parseWwwAuthenticate:\"Bearer  scope=\\\"x\\\"\"": {
+  "scope": "x"
+ },
+ "buildDiscoveryUrls:https://a.example": [
+  [
+   "https://a.example/.well-known/oauth-authorization-server",
+   "oauth"
+  ],
+  [
+   "https://a.example/.well-known/openid-configuration",
+   "oidc"
+  ]
+ ],
+ "buildDiscoveryUrls:https://a.example/": [
+  [
+   "https://a.example/.well-known/oauth-authorization-server",
+   "oauth"
+  ],
+  [
+   "https://a.example/.well-known/openid-configuration",
+   "oidc"
+  ]
+ ],
+ "buildDiscoveryUrls:https://a.example/tenant": [
+  [
+   "https://a.example/.well-known/oauth-authorization-server/tenant",
+   "oauth"
+  ],
+  [
+   "https://a.example/.well-known/openid-configuration/tenant",
+   "oidc"
+  ],
+  [
+   "https://a.example/tenant/.well-known/openid-configuration",
+   "oidc"
+  ]
+ ],
+ "buildDiscoveryUrls:https://a.example/tenant/": [
+  [
+   "https://a.example/.well-known/oauth-authorization-server/tenant",
+   "oauth"
+  ],
+  [
+   "https://a.example/.well-known/openid-configuration/tenant",
+   "oidc"
+  ],
+  [
+   "https://a.example/tenant/.well-known/openid-configuration",
+   "oidc"
+  ]
+ ],
+ "buildDiscoveryUrls:https://a.example/a/b": [
+  [
+   "https://a.example/.well-known/oauth-authorization-server/a/b",
+   "oauth"
+  ],
+  [
+   "https://a.example/.well-known/openid-configuration/a/b",
+   "oidc"
+  ],
+  [
+   "https://a.example/a/b/.well-known/openid-configuration",
+   "oidc"
+  ]
+ ],
+ "resourceUrlFromServerUrl:https://a.example/mcp": "https://a.example/mcp",
+ "resourceUrlFromServerUrl:https://a.example/mcp#frag": "https://a.example/mcp",
+ "resourceUrlFromServerUrl:https://a.example/mcp?x=1#f": "https://a.example/mcp?x=1",
+ "resourceUrlFromServerUrl:https://a.example/": "https://a.example/",
+ "resourceUrlFromServerUrl:https://a.example:8443/mcp": "https://a.example:8443/mcp",
+ "resourceUrlFromServerUrl:https://a.example": "https://a.example/",
+ "resourceUrlFromServerUrl:https://a.example?x=1": "https://a.example/?x=1",
+ "selectResource:https://a.example|undefined": null,
+ "selectResource:https://a.example|https://a.example/mcp": {
+  "__error": "Protected resource https://a.example/mcp does not match MCP server https://a.example/"
+ },
+ "selectResource:https://a.example|https://a.example": "https://a.example",
+ "selectResource:https://a.example|https://a.example/mcp/deep": {
+  "__error": "Protected resource https://a.example/mcp/deep does not match MCP server https://a.example/"
+ },
+ "selectResource:https://a.example|https://b.example/mcp": {
+  "__error": "Protected resource https://b.example/mcp does not match MCP server https://a.example/"
+ },
+ "selectResource:https://a.example|https://a.example/other": {
+  "__error": "Protected resource https://a.example/other does not match MCP server https://a.example/"
+ },
+ "selectResource:https://a.example/mcp|undefined": null,
+ "selectResource:https://a.example/mcp|https://a.example/mcp": "https://a.example/mcp",
+ "selectResource:https://a.example/mcp|https://a.example": "https://a.example",
+ "selectResource:https://a.example/mcp|https://a.example/mcp/deep": {
+  "__error": "Protected resource https://a.example/mcp/deep does not match MCP server https://a.example/mcp"
+ },
+ "selectResource:https://a.example/mcp|https://b.example/mcp": {
+  "__error": "Protected resource https://b.example/mcp does not match MCP server https://a.example/mcp"
+ },
+ "selectResource:https://a.example/mcp|https://a.example/other": {
+  "__error": "Protected resource https://a.example/other does not match MCP server https://a.example/mcp"
+ },
+ "selectResource:https://b.example/mcp|undefined": null,
+ "selectResource:https://b.example/mcp|https://a.example/mcp": {
+  "__error": "Protected resource https://a.example/mcp does not match MCP server https://b.example/mcp"
+ },
+ "selectResource:https://b.example/mcp|https://a.example": {
+  "__error": "Protected resource https://a.example does not match MCP server https://b.example/mcp"
+ },
+ "selectResource:https://b.example/mcp|https://a.example/mcp/deep": {
+  "__error": "Protected resource https://a.example/mcp/deep does not match MCP server https://b.example/mcp"
+ },
+ "selectResource:https://b.example/mcp|https://b.example/mcp": "https://b.example/mcp",
+ "selectResource:https://b.example/mcp|https://a.example/other": {
+  "__error": "Protected resource https://a.example/other does not match MCP server https://b.example/mcp"
+ },
+ "stepUpScope:[\"repo read:org\",\"repo admin\"]": "repo read:org admin",
+ "stepUpScope:[null,\"a\"]": "a",
+ "stepUpScope:[\"a\",\"\"]": null,
+ "stepUpScope:[null,null]": null,
+ "stepUpScope:[\"a a b\",\"b c\"]": "a b c",
+ "stepUpScope:[\"\",\"x\"]": "x",
+ "stepUpScope:[\"a\",null]": null,
+ "prm:minimal": {
+  "resource": "https://a.example/mcp"
+ },
+ "prm:servers+scopes": {
+  "resource": "https://a.example/mcp",
+  "authorization_servers": [
+   "https://a.example",
+   "https://b.example"
+  ],
+  "scopes_supported": [
+   "a",
+   "b"
+  ],
+  "extra": 1
+ },
+ "prm:bad-server": {
+  "__error": "Invalid authorization server URL"
+ },
+ "prm:no-resource": {
+  "__error": "Invalid OAuth protected resource metadata resource"
+ },
+ "prm:javascript": {
+  "__error": "Invalid OAuth protected resource metadata resource"
+ },
+ "prm:null-scopes": {
+  "resource": "https://a.example/mcp"
+ },
+ "asm:minimal": {
+  "issuer": "https://a.example",
+  "authorization_endpoint": "https://a.example/authorize",
+  "token_endpoint": "https://a.example/token",
+  "response_types_supported": [
+   "code"
+  ]
+ },
+ "asm:full": {
+  "issuer": "https://a.example/",
+  "authorization_endpoint": "https://a.example/authorize",
+  "token_endpoint": "https://a.example/token",
+  "registration_endpoint": "https://a.example/register",
+  "scopes_supported": [
+   "a"
+  ],
+  "response_types_supported": [
+   "code"
+  ],
+  "grant_types_supported": [
+   "authorization_code"
+  ],
+  "token_endpoint_auth_methods_supported": [
+   "none"
+  ],
+  "code_challenge_methods_supported": [
+   "S256"
+  ],
+  "client_id_metadata_document_supported": true,
+  "authorization_response_iss_parameter_supported": false,
+  "extra": {
+   "deep": true
+  }
+ },
+ "asm:no-response-types": {
+  "__error": "Invalid response_types_supported"
+ },
+ "asm:empty-registration": {
+  "issuer": "https://a.example",
+  "authorization_endpoint": "https://a.example/authorize",
+  "token_endpoint": "https://a.example/token",
+  "response_types_supported": [
+   "code"
+  ]
+ },
+ "asm:bad-issuer": {
+  "__error": "Invalid authorization server issuer"
+ },
+ "tokens:minimal": {
+  "access_token": "a",
+  "token_type": "Bearer"
+ },
+ "tokens:null-expires": {
+  "access_token": "a",
+  "token_type": "Bearer"
+ },
+ "tokens:string-expires": {
+  "access_token": "a",
+  "token_type": "Bearer",
+  "expires_in": 60
+ },
+ "tokens:nan-expires": {
+  "__error": "Invalid expires_in"
+ },
+ "tokens:empty-scope": {
+  "access_token": "a",
+  "token_type": "Bearer"
+ },
+ "tokens:missing-type": {
+  "__error": "Invalid token_type"
+ },
+ "client:minimal": {
+  "client_id": "c",
+  "redirect_uris": []
+ },
+ "client:extra": {
+  "client_id": "c",
+  "redirect_uris": [
+   "https://a/cb"
+  ],
+  "client_name": "n",
+  "custom": 7
+ },
+ "client:issued-at": {
+  "client_id": "c",
+  "client_id_issued_at": 5,
+  "client_secret_expires_at": 9.5,
+  "redirect_uris": []
+ }
+}

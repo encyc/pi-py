@@ -25,13 +25,17 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync
+        # --all-packages --all-extras：可选 extra（如 pi-py-durable[images] 的 Pillow）在 CI 里
+        # 也必须装上。否则依赖它们的测试会走 importorskip 分支**静默 skip**，那条路径变成零覆盖。
+        # 注意：只写 --all-extras 不够 —— 它作用于**根项目**的 extras，而根项目没有 extras；
+        # workspace 成员的 extras 需要 --all-packages 才会被一并同步。
+        run: uv sync --all-packages --all-extras
 
       - name: Ruff check
-        run: uv run ruff check packages/
+        run: uv run ruff check packages/ .github/scripts/
 
       - name: Ruff format check
-        run: uv run ruff format --check packages/
+        run: uv run ruff format --check packages/ .github/scripts/
 
       - name: Mypy
         run: uv run mypy

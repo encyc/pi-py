@@ -1,0 +1,36 @@
+[project]
+name = "pi-py-codemode"
+version = "1.3.0"
+description = "Python port of @earendil-works/pi-codemode — sandboxed JavaScript whose only capability is calling injected tools"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "Justin Gao" }]
+dependencies = [
+    "wasmtime>=49,<50",
+]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Intended Audience :: Developers",
+]
+
+[project.urls]
+Homepage = "https://github.com/encyc/pi-py"
+Repository = "https://github.com/encyc/pi-py"
+Issues = "https://github.com/encyc/pi-py/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# `_assets/quickjs.wasm` (637 KiB) and `_assets/prelude.js` are package data: hatchling
+# ships every file below the package directory, so the wheel is self-contained.
+packages = ["src/pi_codemode"]

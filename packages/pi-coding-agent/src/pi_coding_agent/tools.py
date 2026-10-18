@@ -31,6 +31,25 @@ from .truncate import (
 )
 
 # ============================================================
+# 与上游共用的工具定义片段
+# ============================================================
+
+
+def _prefer_strict_sampling() -> dict[str, Any]:
+    """内置工具默认的受约束采样配置。
+
+    对齐上游 v1.3.0：``read`` / ``bash`` / ``edit`` / ``write`` 的 ``constrainedSampling``
+    从 ``PI_EXPERIMENTAL`` 门控改为**默认开启** ``{type: "json_schema", strict: "prefer"}``
+    （上游 ``core/tools/{bash,read,edit,write}.ts``，``experimental.ts`` 的
+    ``getExperimentalToolSampling()`` 已删除）。
+
+    pi-agent-core 经 ``getattr(tool, "constrained_sampling", None)`` 透传给 pi-ai 的
+    ``Tool``，再由 provider 解析，因此这里只需在工具类上声明该属性。
+    """
+    return {"type": "json_schema", "strict": "prefer"}
+
+
+# ============================================================
 # 路径解析
 # ============================================================
 
@@ -55,6 +74,58 @@ _BASH_DESC = (
     "Optionally provide a timeout in seconds."
 )
 
+#: 结构化输出（``structured_content``）里 ``output`` 的字节上限。
+#: 对齐上游 ``tools/bash.ts`` 的 ``STRUCTURED_OUTPUT_MAX_BYTES``：面向程序调用方
+#: （如 codemode 脚本）时不受模型侧 2000 行 / 50KB 的限制。
+STRUCTURED_OUTPUT_MAX_BYTES = 1024 * 1024
+
+#: 上游 ``tools/bash.ts`` 的 ``bashOutputSchema``：程序调用方拿到的结果形状。
+BASH_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "output": {
+            "type": "string",
+            "description": "Combined stdout and stderr, possibly truncated",
+        },
+        "truncated": {"type": "boolean"},
+        "full_output_path": {
+            "type": "string",
+            "description": "Full output, when truncated",
+        },
+        "exit_code": {"type": "number"},
+        "wall_time_seconds": {"type": "number"},
+    },
+    "required": ["output", "truncated", "exit_code", "wall_time_seconds"],
+}
+
+
+def _bounded_output(output: str, max_bytes: int = STRUCTURED_OUTPUT_MAX_BYTES) -> tuple[str, bool]:
+    """保留首尾各 ``max_bytes / 2`` 字节，中间插入省略标记。
+
+    对齐上游 ``OutputAccumulator.readFullOutput()``：标记文本与省略字节数的算法都一致
+    （``omitted = size - maxBytes``，即按请求的字节数而非边界对齐后的实际值计算）。
+    pi-py 没有上游的 ``bash-executor`` / ``OutputAccumulator`` 架构（见 ``PORTING.md``），
+    因此这里直接用内存中的完整输出做同样的事。
+    """
+    buf = output.encode("utf-8")
+    if len(buf) <= max_bytes:
+        return output, False
+    head_bytes = max_bytes // 2
+    tail_bytes = max_bytes - head_bytes
+    # 头部按流式解码，自然扣住不完整的尾序列；尾部跳过续字节以落在字符边界。
+    head_text = buf[:head_bytes].decode("utf-8", errors="ignore")
+    tail_start = len(buf) - tail_bytes
+    while tail_start < len(buf) and (buf[tail_start] & 0xC0) == 0x80:
+        tail_start += 1
+    tail_text = buf[tail_start:].decode("utf-8")
+    omitted = len(buf) - head_bytes - tail_bytes
+    return f"{head_text}\n\n[... {omitted} bytes omitted ...]\n\n{tail_text}", True
+
+
+def _append_status(text: str, status: str) -> str:
+    """把状态行追加到输出后；输出为空时不留下前导空行（对齐上游 ``appendStatus``）。"""
+    return f"{text}\n\n{status}" if text else status
+
 
 class BashTool:
     """执行 bash 命令。"""
@@ -74,6 +145,8 @@ class BashTool:
         },
         "required": ["command"],
     }
+    output_schema: dict[str, Any] | None = BASH_OUTPUT_SCHEMA
+    constrained_sampling = _prefer_strict_sampling()
 
     def __init__(self, cwd: str = ".", command_prefix: str = "") -> None:
         self._cwd = cwd
@@ -91,6 +164,7 @@ class BashTool:
         if self._command_prefix:
             command = self._command_prefix + "\n" + command
 
+        started_at = time.monotonic()
         try:
             proc = await asyncio.create_subprocess_shell(
                 command,
@@ -139,6 +213,7 @@ class BashTool:
         # 截断（尾部保留）
         trunc = truncate_tail(output)
         result_text = trunc.content
+        full_output_path: str | None = None
         if trunc.truncated:
             # 保存全文到临时文件
             tmp = (
@@ -146,6 +221,7 @@ class BashTool:
                 / f"pi-bash-{os.getpid()}-{int(time.time()) % 100000}.log"
             )
             tmp.write_text(output, encoding="utf-8")
+            full_output_path = str(tmp)
             if trunc.truncated_by == "lines":
                 result_text += (
                     f"\n\n[Showing lines {trunc.total_lines - trunc.output_lines + 1}-"
@@ -157,13 +233,52 @@ class BashTool:
                     f"of {format_size(trunc.total_bytes)}. Full output: {tmp}]"
                 )
 
-        # 非零退出码
-        if exit_code is not None and exit_code != 0:
-            result_text += f"\n\nCommand exited with code {exit_code}"
+        details = {"exit_code": exit_code, "truncated": trunc.truncated}
+        # 对齐上游：四舍五入到 0.1 秒。
+        wall_time_seconds = round(time.monotonic() - started_at, 1)
+
+        # 对齐上游 v1.3.0：没有退出码（上游 `exitCode === null`，例如被信号杀掉且拿不到
+        # signalCode）**不再当作成功**，而是失败结果。
+        if exit_code is None:
+            return AgentToolResult(
+                content=[
+                    TextContent(
+                        text=_append_status(result_text, "Command terminated without an exit code")
+                    )
+                ],
+                details=details,
+                is_error=True,
+            )
+
+        # 结构化输出：给程序调用方（不发给模型），受结构化上限约束而非模型侧截断。
+        bounded_output, output_truncated = _bounded_output(output)
+        structured_content: dict[str, Any] = {
+            "output": bounded_output,
+            "truncated": output_truncated,
+            "exit_code": exit_code,
+            "wall_time_seconds": wall_time_seconds,
+        }
+        if output_truncated and full_output_path is not None:
+            structured_content["full_output_path"] = full_output_path
+
+        # 对齐上游 v1.3.0：非零退出码是 `is_error` 结果（而不是抛异常），
+        # 这样 details / structured_content 仍能传给程序调用方。
+        if exit_code != 0:
+            return AgentToolResult(
+                content=[
+                    TextContent(
+                        text=_append_status(result_text, f"Command exited with code {exit_code}")
+                    )
+                ],
+                details=details,
+                structured_content=structured_content,
+                is_error=True,
+            )
 
         return AgentToolResult(
             content=[TextContent(text=result_text)],
-            details={"exit_code": exit_code, "truncated": trunc.truncated},
+            details=details,
+            structured_content=structured_content,
         )
 
 
@@ -180,6 +295,24 @@ _READ_DESC = (
 )
 
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
+
+#: 上游 ``tools/read.ts`` 的 ``readOutputSchema``：文本文件得到字符串，
+#: 图片得到可被 codemode 的 ``image()`` 接受的图片块。
+READ_OUTPUT_SCHEMA: dict[str, Any] = {
+    "anyOf": [
+        {"type": "string"},
+        {
+            "type": "object",
+            "properties": {
+                "type": {"const": "image"},
+                "data": {"type": "string"},
+                "mimeType": {"type": "string"},
+                "note": {"type": "string"},
+            },
+            "required": ["type", "data", "mimeType", "note"],
+        },
+    ]
+}
 
 
 class ReadTool:
@@ -201,6 +334,8 @@ class ReadTool:
         },
         "required": ["path"],
     }
+    output_schema: dict[str, Any] | None = READ_OUTPUT_SCHEMA
+    constrained_sampling = _prefer_strict_sampling()
 
     def __init__(self, cwd: str = ".") -> None:
         self._cwd = cwd
@@ -220,6 +355,7 @@ class ReadTool:
             return AgentToolResult(
                 content=[TextContent(text=f"File not found: {params['path']}")],
                 details={"error": "not_found"},
+                structured_content=f"File not found: {params['path']}",
             )
 
         ext = os.path.splitext(path)[1].lower()
@@ -230,15 +366,24 @@ class ReadTool:
                 data = f.read()
             import base64
 
+            note = f"Image: {params['path']}"
+            encoded = base64.b64encode(data).decode("ascii")
+            mime_type = f"image/{ext[1:]}" if ext != ".jpg" else "image/jpeg"
             return AgentToolResult(
                 content=[
-                    TextContent(text=f"Image: {params['path']}"),
-                    ImageContent(
-                        data=base64.b64encode(data).decode("ascii"),
-                        mime_type=f"image/{ext[1:]}" if ext != ".jpg" else "image/jpeg",
-                    ),
+                    TextContent(text=note),
+                    # 用字段名构造（``ImageContent.mime_type`` 的 alias 是 ``mimeType``，
+                    # ``populate_by_name=True`` 让两者运行时等价；本仓库的 mypy 配置接受字段名）。
+                    ImageContent(data=encoded, mime_type=mime_type),
                 ],
                 details={"path": path, "image": True},
+                # 对齐上游 toReadOutput()：图片文件的结构化结果是图片块 + note。
+                structured_content={
+                    "type": "image",
+                    "data": encoded,
+                    "mimeType": mime_type,
+                    "note": note,
+                },
             )
 
         # 文本分支
@@ -257,6 +402,7 @@ class ReadTool:
                     )
                 ],
                 details={"error": "offset_exceeds"},
+                structured_content=f"Offset {offset} is beyond end of file ({total_lines} lines total)",
             )
 
         if limit is not None:
@@ -276,8 +422,20 @@ class ReadTool:
                 f"Use bash: sed -n '{start_display}p' {params['path']} | head -c {DEFAULT_MAX_BYTES}"
             )
         elif trunc.truncated:
-            next_offset = start + trunc.output_lines + 1
-            result_text += f"\n\n[Showing lines {start + 1}-{start + trunc.output_lines} of {total_lines}. Use offset={next_offset} to continue.]"
+            start_display = start + 1
+            end_display = start_display + trunc.output_lines - 1
+            next_offset = end_display + 1
+            # 对齐上游 v1.3.0：按命中哪种限制给出不同标签（bytes 时标出上限大小）。
+            if trunc.truncated_by == "lines":
+                result_text += (
+                    f"\n\n[Showing lines {start_display}-{end_display} of {total_lines}. "
+                    f"Use offset={next_offset} to continue.]"
+                )
+            else:
+                result_text += (
+                    f"\n\n[Showing lines {start_display}-{end_display} of {total_lines} "
+                    f"({format_size(DEFAULT_MAX_BYTES)} limit). Use offset={next_offset} to continue.]"
+                )
         elif limit is not None and end < total_lines:
             next_offset = end + 1
             result_text += f"\n\n[{total_lines - end} more lines in file. Use offset={next_offset} to continue.]"
@@ -285,6 +443,8 @@ class ReadTool:
         return AgentToolResult(
             content=[TextContent(text=result_text)],
             details={"path": path, "truncated": trunc.truncated},
+            # 对齐上游 toReadOutput()：无图片块时结构化结果就是模型看到的文本。
+            structured_content=result_text,
         )
 
 
@@ -315,6 +475,10 @@ class EditTool:
     label = "edit"
     execution_mode: ToolExecutionMode | None = "sequential"
     description = _EDIT_DESC
+    #: 上游 edit/write/grep/find/ls 未声明 outputSchema，因此这里显式为 None
+    #: （AgentTool 协议要求该成员存在）。
+    output_schema: dict[str, Any] | None = None
+    constrained_sampling = _prefer_strict_sampling()
     parameters = {
         "type": "object",
         "properties": {
@@ -425,6 +589,8 @@ class WriteTool:
     label = "write"
     execution_mode: ToolExecutionMode | None = "sequential"
     description = _WRITE_DESC
+    output_schema: dict[str, Any] | None = None
+    constrained_sampling = _prefer_strict_sampling()
     parameters = {
         "type": "object",
         "properties": {
@@ -498,6 +664,7 @@ class GrepTool:
     label = "grep"
     execution_mode: ToolExecutionMode | None = None
     description = _GREP_DESC
+    output_schema: dict[str, Any] | None = None
     parameters = {
         "type": "object",
         "properties": {
@@ -650,6 +817,7 @@ class FindTool:
     label = "find"
     execution_mode: ToolExecutionMode | None = None
     description = _FIND_DESC
+    output_schema: dict[str, Any] | None = None
     parameters = {
         "type": "object",
         "properties": {
@@ -739,6 +907,7 @@ class LsTool:
     label = "ls"
     execution_mode: ToolExecutionMode | None = None
     description = _LS_DESC
+    output_schema: dict[str, Any] | None = None
     parameters = {
         "type": "object",
         "properties": {

@@ -26,11 +26,12 @@ from typing import Any
 
 from anthropic import AsyncAnthropic
 
+from ..async_utils import maybe_await
 from ..constrained_sampling import (
     get_json_schema_tool_parameters,
     resolve_json_schema_strict_sampling,
 )
-from ..event_stream import EventStream
+from ..event_stream import AssistantMessageEventStream, EventStream
 from ..events import (
     AssistantMessageEvent,
     DoneEvent,
@@ -46,7 +47,15 @@ from ..events import (
     ToolCallEndEvent,
     ToolCallStartEvent,
 )
+from ..json_parse import parse_streaming_json, parse_tool_call_arguments
 from ..provider_retry import retry_provider_request
+from ..transcript import (
+    ensure_transcript,
+    get_current_system_prompt,
+    get_current_tools,
+    resolve_transcript,
+)
+from ..transform_messages import transform_assistant_content
 from ..types import (
     AssistantMessage,
     Context,
@@ -57,6 +66,7 @@ from ..types import (
     TextContent,
     ThinkingContent,
     ToolCall,
+    TranscriptContext,
     Usage,
     UsageCost,
 )
@@ -151,25 +161,35 @@ def _convert_tools(
 
 
 def _convert_messages(
-    context: Context, managed_provider: str | None = None
+    context: TranscriptContext, model: Model, managed_provider: str | None = None
 ) -> tuple[list[dict[str, Any]], Any, dict[int, str]]:
-    """Context -> (anthropic messages, system, assistant_levels)。
+    """TranscriptContext -> (anthropic messages, system, assistant_levels)。
 
     system 为 list[{type:text, text, cache_control?}] 或 None。
     连续 toolResult 消息合并进一个 user 轮次。
     assistant_levels 记录（转换后消息索引 -> 历史 effort 级别），仅当
     ``managed_provider`` 匹配消息的 provider 且带 providerThinkingLevel 时
     （v0.85.1 mid-conversation effort 回放）。
+
+    v1.3.0 变更：
+    - **M-1**：系统提示词取自 transcript 的 system message；不支持会话中途 system
+      消息的端点先折叠（``resolve_transcript``）。
+    - **M-6**：assistant 的思考块经
+      :func:`~pi_ai.transform_messages.transform_assistant_content` 处理——**跨模型丢弃**。
+      本端 v0.85.1 的实现是"有签名就回放"，跨模型切换会发送无效签名，Anthropic 会以
+      "Invalid `signature` in `thinking` block" 400（上游同类问题 issue #10324）。
     """
     from ..types import AssistantMessage, ToolResultMessage, UserMessage
 
+    normalized = resolve_transcript(context, False)
+    system_prompt = get_current_system_prompt(normalized.messages)
     system: list[dict[str, Any]] | None = None
-    if context.system_prompt:
-        system = [{"type": "text", "text": context.system_prompt}]
+    if system_prompt:
+        system = [{"type": "text", "text": system_prompt}]
 
     messages: list[dict[str, Any]] = []
     assistant_levels: dict[int, str] = {}
-    msgs = context.messages
+    msgs = normalized.messages
     i = 0
     while i < len(msgs):
         msg = msgs[i]
@@ -198,7 +218,9 @@ def _convert_messages(
         elif isinstance(msg, AssistantMessage):
             # text + thinking（带 signature 回放）+ tool_use
             parts = []
-            for block in msg.__dict__["content"]:
+            # M-6：跨模型思考丢弃（跨模型时清空 thinking 块，仅保留 text/tool_use）
+            blocks = transform_assistant_content(list(msg.__dict__["content"]), msg, model)
+            for block in blocks:
                 if isinstance(block, TextContent) and block.text:
                     parts.append({"type": "text", "text": block.text})
                 elif isinstance(block, ThinkingContent):
@@ -402,23 +424,12 @@ class _Block:
 
 
 def _parse_streaming_json(s: str) -> dict[str, Any]:
-    """容错解析不完整 JSON。"""
-    if not s:
-        return {}
-    import json
+    """容错解析不完整 JSON。
 
-    try:
-        result: dict[str, Any] = json.loads(s)
-        return result
-    except Exception:
-        pass
-    try:
-        from json_repair import repair_json
-
-        repaired = repair_json(s, return_objects=True)
-        return repaired if isinstance(repaired, dict) else {}
-    except Exception:
-        return {}
+    保留本名以兼容既有调用；实现已迁移到 :mod:`pi_ai.json_parse`，
+    与 OpenAI provider 共用一份（原先两处逐字重复）。
+    """
+    return parse_streaming_json(s)
 
 
 # ============================================================
@@ -428,10 +439,12 @@ def _parse_streaming_json(s: str) -> dict[str, Any]:
 
 def _run_anthropic_stream(
     model: Model,
-    context: Context,
+    context: Context | TranscriptContext,
     options: StreamOptions | None,
 ) -> EventStream[AssistantMessageEvent, AssistantMessage]:
-    es: EventStream[AssistantMessageEvent, AssistantMessage] = EventStream()
+    # 裸 Context 直接调用 provider 时也要归一化（见 transcript.ensure_transcript）。
+    context = ensure_transcript(context)
+    es: AssistantMessageEventStream = AssistantMessageEventStream()
     api_key = (options.api_key if options else None) or _resolve_api_key()
 
     async def drive() -> None:
@@ -459,8 +472,10 @@ def _run_anthropic_stream(
             options.http_client if options else None,
         )
 
+        normalized_context = resolve_transcript(context, False)
+        current_tools = get_current_tools(normalized_context.messages)
         messages, system, assistant_levels = _convert_messages(
-            context, managed_provider=model.provider if mid_convo else None
+            normalized_context, model, managed_provider=model.provider if mid_convo else None
         )
         if mid_convo:
             messages = _insert_thinking_level_messages(messages, assistant_levels, active_effort)
@@ -491,9 +506,9 @@ def _run_anthropic_stream(
         }
         if system:
             params["system"] = system
-        if context.tools:
+        if current_tools:
             params["tools"] = _convert_tools(
-                context.tools,
+                current_tools,
                 supports_strict_tools=compat.get("supportsStrictTools", False),
             )
         # provider 中性的工具选择（v0.85.1）：映射为 anthropic tool_choice 对象
@@ -540,6 +555,11 @@ def _run_anthropic_stream(
             )
             # 遍历类型化流事件
             async for event in response:
+                # M-22：在 Pi 归一化之前观察原始 provider 流事件
+                # （上游 api/anthropic-messages.ts:700）。
+                on_stream_event = options.on_provider_stream_event if options else None
+                if on_stream_event is not None:
+                    await maybe_await(on_stream_event(event, model))
                 etype = event.type
 
                 if etype == "message_start":
@@ -691,9 +711,13 @@ def _run_anthropic_stream(
                             )
                         )
                     elif isinstance(block, ToolCall):
-                        # 最终解析参数
+                        # M-4：收尾改用 parse_tool_call_arguments——不保留部分解析前缀；
+                        # 完整参数不是合法 JSON 对象时 arguments 置 {} 并写 argumentsError
+                        # （上游 issue #10897）。流式增量期间仍用容错解析。
                         if blk.partial_json:
-                            block.arguments = _parse_streaming_json(blk.partial_json)
+                            block.arguments, block.arguments_error = parse_tool_call_arguments(
+                                blk.partial_json
+                            )
                         es.push(
                             ToolCallEndEvent(content_index=cidx, tool_call=block, partial=output)
                         )
@@ -759,7 +783,7 @@ class _AnthropicProvider:
     def stream(
         self,
         model: Model,
-        context: Context,
+        context: Context | TranscriptContext,
         options: StreamOptions | None = None,
     ) -> EventStream[AssistantMessageEvent, AssistantMessage]:
         return _run_anthropic_stream(model, context, options)
@@ -767,7 +791,7 @@ class _AnthropicProvider:
     def stream_simple(
         self,
         model: Model,
-        context: Context,
+        context: Context | TranscriptContext,
         options: SimpleStreamOptions | None = None,
     ) -> EventStream[AssistantMessageEvent, AssistantMessage]:
         return _run_anthropic_stream(model, context, options)

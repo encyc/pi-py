@@ -1,6 +1,37 @@
 # pi-storage-sqlite 移植注记
 
-对应上游：[`@earendil-works/pi-storage-sqlite-node`](https://github.com/earendil-works/pi/tree/main/packages/storage/sqlite-node)（v0.85.1）
+## 🗄️ 本包已废弃（2026-10-18）
+
+**本包已并入 [`pi-durable`](../pi-durable)，现在是一个转发壳。**
+
+| | |
+|---|---|
+| 新实现 | `pi_durable.storage.sqlite`（`SqliteStorage` / `open_node_sqlite_storage` / …） |
+| 验收 | 上游 `storage-conformance` 套件 **24/24**，内存与 SQLite 两个后端各跑一遍 |
+| 旧 API | **不转发**——已移除的 5 个名字（`SqliteSessionRepo` / `SqliteSessionStorage` / `SqliteRunResult` / `open_database` / `apply_migrations`）抛出带迁移指引的 `AttributeError` + `DeprecationWarning` |
+| 被删文件 | `database.py`、`storage.py`、`migrations.sql`（旧 session/entry 模型，git 历史可回溯） |
+
+**为什么不转发旧名字**：旧 `SqliteSessionRepo`/`SqliteSessionStorage` 与新 `Storage` 接口
+（15 个方法）**唯一重合的方法名是 `close`**；旧 schema（`sessions`/`entries`/…）与新 schema
+（9 表 / 16 索引）完全不同。转发它们会给出「看起来能用但语义不同」的名字，比明确失败更危险。
+
+**逐项判定**（task-23 时曾判断「`database.py` 骨架约 100 行可留」，SQLite 后端完成后结论更彻底——
+那 100 行**也不值得留**，因为 `pi-durable` 已有一份按上游契约写的、经一致性套件验证的等价实现，
+保留旧骨架只会形成第二套方言）见 [`pi-durable/PORTING.md`](../pi-durable/PORTING.md) 的
+「`pi-storage-sqlite` 并入方案」一节。
+
+---
+
+## 历史注记（废弃前）
+
+对应上游：~~`@earendil-works/pi-storage-sqlite-node`~~ → [`@earendil-works/pi-session-backend-sqlite-node`](https://github.com/earendil-works/pi/tree/v0.85.1/packages/session-backends/sqlite-node)（v0.84.1–v0.85.1，本仓基线版本）
+
+> ⚠️ **上游包名沿革 / 现状（2026-10-18 核实，勿再引用旧名）**
+>
+> - v0.83.0：`packages/storage/sqlite-node`，包名 `@earendil-works/pi-storage-sqlite-node`
+> - v0.84.1–v0.99.2：`packages/session-backends/sqlite-node`，包名 `@earendil-works/pi-session-backend-sqlite-node`
+> - **v1.0.0 起**：`session-backends` 目录在上游已删除（`contents` API 404），SQLite 存储实现移入 `packages/durable`（`src/storage`、`src/session`）
+> - 本包自此没有一一对应的上游包，追赶时以上游 `durable` 的存储层为参照（映射见 `SYNC.md`）
 
 ## 有意偏离上游
 

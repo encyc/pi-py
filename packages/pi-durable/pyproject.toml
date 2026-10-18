@@ -1,0 +1,53 @@
+[project]
+name = "pi-py-durable"
+version = "1.3.0"
+description = "Python port of @earendil-works/pi-durable — portable execution environments (env island)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "Justin Gao" }]
+dependencies = [
+    "pi-py-chord>=1.3.0,<1.4",
+    # 上游 durable/package.json 把 @earendil-works/pi-ai 列为运行时依赖：
+    # harness/types.ts:2-16 的 Tool / Usage / ToolResultMessage 都来自它。
+    "pi-py-ai>=0.85.1,<0.86",
+    # 工具参数用 pydantic 模型定义，再取 model_json_schema() 作为给模型的 JSON Schema，
+    # 消除「JSON Schema 与 Python 类型两个来源」的风险（PORTING.md 偏离 #40）。
+    # 与 pi-ai / pi-agent-core / pi-coding-agent 的写法一致。
+    "pydantic>=2.7",
+    # 结构化输出的校验。上游 ``harness/tool.ts`` 用 TypeBox 的 ``Compile``
+    # （``tool.ts:13,557,573``）把 ``structuredOutputSchema`` 编译成校验器；
+    # TypeBox 是 JS 库，Python 没有对等物。选 ``jsonschema`` 是因为它
+    # **直接吃 JSON Schema**，与 ``Compile`` 的语义最贴近——见 PORTING.md 的新增依赖登记。
+    "jsonschema>=4.20",
+]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Intended Audience :: Developers",
+]
+
+# 上游 ``images/`` 子路径基于 Photon（Rust→WASM），Python 侧对等物是 Pillow。
+# 做成**可选 extra**：本包主体是执行环境，不该为 ``images/`` 一个子模块让所有用户
+# 背上 Pillow。不带 extra 时 ``pi_durable.images`` 仍可 import；只有真正调用
+# processor 才会抛出带安装提示的 ImportError。
+[project.optional-dependencies]
+images = ["Pillow>=10"]
+
+[project.urls]
+Homepage = "https://github.com/encyc/pi-py"
+Repository = "https://github.com/encyc/pi-py"
+Issues = "https://github.com/encyc/pi-py/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pi_durable"]

@@ -8,10 +8,12 @@ import pytest
 
 from pi_ai import AssistantMessage
 from pi_ai.retry import (
+    DEFAULT_MAX_AGENT_RETRY_DELAY_MS,
     RetryCallbacks,
     RetryPolicy,
     is_retryable_assistant_error,
     retry_assistant_call,
+    retry_delay_ms,
 )
 
 
@@ -259,3 +261,97 @@ async def test_cancel_during_backoff_normalizes_to_aborted():
     assert calls == 1
     assert result.stop_reason == "aborted"
     assert result.error_message is None
+
+
+# ============================================================
+# v1.3.0 对齐（M-8）：重试分类扩容 + 延迟封顶
+# ============================================================
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # 上游 v1.3.0 新增的瞬时错误措辞
+        "server_busy",
+        "servers are currently busy",
+        "currently experiencing high demand",
+        "model is at capacity",
+        "upstream returned 520",
+        "unable to forward upstream stream",
+        "pending stream has been canceled",
+        "subscription_sharing_usage_unavailable",
+        "subscription_sharing_user_unavailable",
+        # 上游改写的模式：旧写法匹配不到这两条
+        "The service is temporarily unavailable",
+        "The upstream provider returned an error",
+    ],
+)
+def test_new_retryable_patterns_are_classified(message: str) -> None:
+    assert is_retryable_assistant_error(_err_msg(message)) is True
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "overloaded",
+        "429 Too Many Requests",
+        "Provider returned error",
+        "service unavailable",
+        "Connection refused",
+    ],
+)
+def test_existing_retryable_patterns_still_classified(message: str) -> None:
+    assert is_retryable_assistant_error(_err_msg(message)) is True
+
+
+def test_subscription_usage_limit_is_not_retryable() -> None:
+    """订阅共享额度上限按小时重置 -> 确定性错误，不重试。"""
+    assert (
+        is_retryable_assistant_error(_err_msg("subscription_sharing_usage_limit_exceeded")) is False
+    )
+
+
+def test_quota_still_wins_over_retryable_text() -> None:
+    """不可重试模式优先：即使含 429 也不重试。"""
+    assert is_retryable_assistant_error(_err_msg("429 insufficient_quota")) is False
+
+
+def test_retry_delay_defaults_to_60s_cap() -> None:
+    """**默认行为变更**：不设 max_agent_delay_ms 时退避也被 60 秒封顶。"""
+    assert DEFAULT_MAX_AGENT_RETRY_DELAY_MS == 60_000
+    policy = RetryPolicy(base_delay_ms=1000)
+    assert retry_delay_ms(policy, 1) == 1000
+    assert retry_delay_ms(policy, 7) == 60_000  # 1000*2^6 = 64000 -> 封顶
+    assert retry_delay_ms(policy, 20) == 60_000
+
+
+def test_retry_delay_respects_explicit_cap() -> None:
+    policy = RetryPolicy(base_delay_ms=1000, max_agent_delay_ms=5000)
+    assert retry_delay_ms(policy, 1) == 1000
+    assert retry_delay_ms(policy, 3) == 4000
+    assert retry_delay_ms(policy, 4) == 5000
+
+
+def test_retry_delay_cap_applies_to_the_retry_loop() -> None:
+    """循环里用的是封顶后的值（回归：避免长退避拖死响应）。"""
+    delays: list[int] = []
+
+    async def on_scheduled(attempt: int, max_attempts: int, delay_ms: int, message: str) -> None:
+        delays.append(delay_ms)
+
+    calls = 0
+
+    async def produce():
+        nonlocal calls
+        calls += 1
+        return _err_msg("overloaded")
+
+    async def run() -> None:
+        await retry_assistant_call(
+            produce,
+            RetryPolicy(enabled=True, max_retries=8, base_delay_ms=1000, max_agent_delay_ms=1),
+            callbacks=RetryCallbacks(on_retry_scheduled=on_scheduled),
+        )
+
+    asyncio.run(run())
+    assert delays and all(d == 1 for d in delays)

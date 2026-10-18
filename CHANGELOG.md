@@ -6,6 +6,27 @@
 本项目在 `CHANGELOG.md` 中保留公共的、用户可见的变更记录。
 具体的提交记录参见 [GitHub Releases](https://github.com/earendil-works/pi-py/releases)。
 
+## 未发布（追赶上游 1.3.0）
+
+### 移除
+
+- **`pi-server` 下线**：上游 `@earendil-works/pi-server`（`packages/server`）已在
+  v1.2.0 被删除（连同 `protocol`/`client`，无替代实现），本包失去对应的上游包，
+  停止维护与发布。`pi-py-server` 不再出现在后续版本的 PyPI 发布中；已发布的历史
+  版本（0.83.0 / 0.84.1）仍保留在 PyPI，源码可通过
+  `git log -- packages/pi-server` 追溯。
+
+### 发布基建
+
+- 新增 `release-guard` 工作流：**tag 存在但没有对应 GitHub Release 时 CI 报错**
+  （v0.85.1 漏发到 PyPI 的成因，此前无任何检查）。
+- `publish.yml` 加固：发布前校验 tag 存在、`packages/*` 版本与 tag lockstep 一致、
+  `CHANGELOG.md` 有对应小节；构建改为 `uv build --all-packages`（新增包不会因为
+  忘记加进列表而漏发）；发布后回读 PyPI，要求每个包的 latest 等于本次 tag
+  （防止 `skip-existing` 掩盖「其实没传上去」）。
+- 补发通道改为显式指定 tag（`workflow_dispatch` 的 `tag` 输入必填并检出该 tag），
+  修复此前手动触发会检出 `main` HEAD、构建出与 tag 不符的包的问题。
+
 ## 0.85.1 (2026-09-07)
 
 对齐上游 v0.85.1（minor 0.85 + patch 0.85.1）。

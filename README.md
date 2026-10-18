@@ -6,16 +6,23 @@
 
 ## 同步状态
 
-- **当前对齐版本**：[`v0.85.1`](./UPSTREAM_VERSION)（2026-09-07，minor 0.85 + patch .1）
-- **同步策略**：仅在上游发布 `0.x.0`（minor）时集中同步，详见 [`SYNC.md`](./SYNC.md)
+- **当前对齐版本**：[`v0.85.1`](./UPSTREAM_VERSION)（2026-09-07）
+- **同步策略**：每 2 周集中同步一次；期间若扫描器命中「破坏性变更」则提前处理。
+  触发源是上游各包的 `CHANGELOG.md`（不是版本号，也不是 Release Notes）。详见 [`SYNC.md`](./SYNC.md)。
+- **进行中**：追赶上游 1.0 大改版（包重组：`agent` 瘦身、`session-backends`→`durable`、
+  新增 `mcp`/`codemode`/`env`、`server`/`protocol`/`client` 删除）。计划见
+  [`recon/00-catchup-plan.md`](./recon/00-catchup-plan.md)。
 
 | 包 | 上游对应 | 状态 | 说明 |
 |---|---|---:|---|
 | [`pi-ai`](./packages/pi-ai) | `@earendil-works/pi-ai` | ✅ | 统一 LLM API（OpenAI + Anthropic + retry） |
-| [`pi-agent-core`](./packages/pi-agent-core) | `@earendil-works/pi-agent-core` | ✅ | agent 循环引擎 + harness（技能/会话/压缩） |
-| [`pi-storage-sqlite`](./packages/pi-storage-sqlite) | `@earendil-works/pi-storage-sqlite-node` | ✅ | SQLite 会话存储后端 |
+| [`pi-agent-core`](./packages/pi-agent-core) | `@earendil-works/pi-agent-core` | ✅ | agent 循环引擎 + sessions（技能/会话/压缩） |
+| [`pi-storage-sqlite`](./packages/pi-storage-sqlite) | _无_（上游已删） | 🗄️ | **已废弃**：转发壳，请改用 `pi_durable.storage.sqlite` |
 | [`pi-coding-agent`](./packages/pi-coding-agent) | `@earendil-works/pi-coding-agent` | ✅ | 编码 agent SDK（bash/read/edit/write/grep/find/ls） |
-| [`pi-server`](./packages/pi-server) | `@earendil-works/pi-server` | ✅ | agent 服务化（Unix socket + JSONL + supervisor） |
+| [`pi-chord`](./packages/pi-chord) | `@earendil-works/chord`（仅 `context` 子路径） | 🚧 | 调用作用域上下文微内核（镜像上游 v1.3.0） |
+| [`pi-durable`](./packages/pi-durable) | `@earendil-works/pi-durable`（env 岛） | 🚧 | 可移植执行环境（fs/shell/watch）+ 上游 env-conformance 可执行规格 |
+| [`pi-codemode`](./packages/pi-codemode) | `@earendil-works/pi-codemode` | 🚧 | JS 沙箱（wasmtime + 上游同一份 `quickjs.wasm`，prelude 原文装载） |
+| [`pi-mcp`](./packages/pi-mcp) | `@earendil-works/pi-mcp` | 🚧 | MCP 客户端（stdio 子进程 + Streamable HTTP/SSE；OAuth 属第二期） |
 
 ## 安装
 
@@ -31,12 +38,14 @@ pip install pi-py-coding-agent # 编码 agent SDK
 | PyPI 包 | 用途 |
 |---|---|
 | [`pi-py-ai`](https://pypi.org/project/pi-py-ai/) | 统一 LLM API（OpenAI + Anthropic + retry） |
-| [`pi-py-agent-core`](https://pypi.org/project/pi-py-agent-core/) | agent 循环引擎 + harness |
+| [`pi-py-agent-core`](https://pypi.org/project/pi-py-agent-core/) | agent 循环引擎 + sessions |
 | [`pi-py-storage-sqlite`](https://pypi.org/project/pi-py-storage-sqlite/) | SQLite 会话存储后端 |
 | [`pi-py-coding-agent`](https://pypi.org/project/pi-py-coding-agent/) | 编码 agent SDK |
-| [`pi-py-server`](https://pypi.org/project/pi-py-server/) | agent 服务化（Unix socket + JSONL） |
 
-发布流程：打 tag 并创建 GitHub Release 后，[`publish.yml`](./.github/workflows/publish.yml) 自动构建并发布全部 5 个包到 PyPI。发布记录见 [Releases](https://github.com/encyc/pi-py/releases) 与 [CHANGELOG.md](./CHANGELOG.md)。
+发布流程：打 tag **并创建 GitHub Release** 后，[`publish.yml`](./.github/workflows/publish.yml) 自动构建并发布 `packages/` 下全部 workspace 成员到 PyPI。发布记录见 [Releases](https://github.com/encyc/pi-py/releases) 与 [CHANGELOG.md](./CHANGELOG.md)。
+
+> ⚠️ 只推 tag 而不建 Release 会导致发布流程**静默不触发**——`v0.85.1` 就是这样漏发的。
+> [`release-guard.yml`](./.github/workflows/release-guard.yml) 会检查这一点。
 
 ## 快速上手
 
@@ -122,10 +131,13 @@ asyncio.run(main())
 ```
 packages/
 ├── pi-ai/              # 叶子 — 统一 LLM API
-├── pi-agent-core/      # → pi-ai — agent 运行时
-├── pi-storage-sqlite/  # → pi-ai + pi-agent-core — SQLite 后端
-├── pi-coding-agent/    # → pi-agent-core + pi-ai — 编码 agent SDK
-└── pi-server/          # → pi-coding-agent — RPC 服务
+├── pi-chord/           # 叶子 — 调用作用域上下文（上游 chord 的 context 子路径）
+├── pi-agent-core/      # → pi-ai — agent 循环引擎
+├── pi-durable/         # → pi-chord — 可移植执行环境（目前仅 env 岛）
+├── pi-codemode/        # 叶子（仅依赖 wasmtime）— JS 沙箱（QuickJS/WASM）
+├── pi-mcp/             # 叶子（仅依赖 httpx）— MCP 客户端（stdio / Streamable HTTP）
+├── pi-storage-sqlite/  # 已废弃 — 转发壳，指向 pi-durable.storage.sqlite
+└── pi-coding-agent/    # → pi-agent-core + pi-ai — 编码 agent SDK
 ```
 
 依赖方向自底向上，与上游一致。每个有意偏离上游的地方，记录在对应包的 [`PORTING.md`](./packages/pi-ai/PORTING.md) 中。

@@ -10,7 +10,7 @@ import asyncio
 import time
 from typing import Any
 
-from ..event_stream import EventStream
+from ..event_stream import AssistantMessageEventStream, EventStream
 from ..events import (
     AssistantMessageEvent,
     DoneEvent,
@@ -30,6 +30,7 @@ from ..types import (
     StopReason,
     StreamOptions,
     ToolCall,
+    TranscriptContext,
     Usage,
 )
 
@@ -80,11 +81,13 @@ def _pop_script() -> FauxScript:
 
 def _run_faux(
     model: Model,
-    context: Context,
+    context: Context | TranscriptContext,
     options: StreamOptions | None,
 ) -> EventStream[AssistantMessageEvent, AssistantMessage]:
+    # context 未使用：faux 按脚本产出，不回放历史。仍归一化以保持入参契约一致。
+    del context
     script = _pop_script()
-    es: EventStream[AssistantMessageEvent, AssistantMessage] = EventStream()
+    es: AssistantMessageEventStream = AssistantMessageEventStream()
 
     async def drive() -> None:
         output = AssistantMessage(
@@ -133,17 +136,53 @@ def _run_faux(
         final_reason: StopReason = script.stop_reason or (
             "toolUse" if script.tool_calls else "stop"
         )
+        # ``pending`` 是"还没结束"的中间态，脚本不该以它收尾。
+        # 上游 faux.ts:441 直接 throw，由外层 catch 转成 error 事件。
         if final_reason == "pending":
             output.stop_reason = "error"
             output.error_message = "Faux response ended without a stop reason"
             es.push(ErrorEvent(reason="error", error=output))
             es.end(output)
             return
+        # 上游 faux.ts:444-449：``error`` 与 ``aborted`` 必须发 **ErrorEvent**。
+        # 历史 bug：此前一律发 ``DoneEvent``，而 ``DoneEvent.reason`` 只接受
+        # ``stop|length|toolUse``，于是 ``FauxScript(stop_reason="aborted")`` 会在
+        # push 时抛 ValidationError；该异常发生在 asyncio task 内、无人 await，
+        # 流因此**永不结束**，消费者（含 agent-core 测试）永久挂起。
+        if final_reason in ("error", "aborted"):
+            output.stop_reason = final_reason
+            if final_reason == "error" and not output.error_message:
+                output.error_message = "Faux response ended with an error"
+            es.push(ErrorEvent(reason=final_reason, error=output))
+            es.end(output)
+            return
         output.stop_reason = final_reason
         es.push(DoneEvent(reason=output.stop_reason, message=output))
         es.end(output)
 
-    asyncio.ensure_future(drive())
+    async def guarded_drive() -> None:
+        """驱动流，并**保证**任何异常都会终结流。
+
+        没有这层保护时，``drive()`` 里的任何异常（如构造事件时的校验失败）都只会
+        留在无人 await 的 asyncio task 里：流既不 done 也不 error，消费者
+        ``async for`` 永久挂起。真实 provider 都有等价的 ``except BaseException``
+        兜底，faux 此前缺这一层，是上面那个坑能"挂死测试"的根因。
+        """
+        try:
+            await drive()
+        except BaseException as exc:  # noqa: BLE001 - 绝不允许异常逃逸出驱动任务
+            error_message = AssistantMessage(
+                api=model.api,
+                provider=model.provider,
+                model=model.id,
+                stop_reason="error",
+                error_message=f"Faux driver failed: {exc!r}",
+                timestamp=int(time.time() * 1000),
+            )
+            es.push(ErrorEvent(reason="error", error=error_message))
+            es.end(error_message)
+
+    asyncio.ensure_future(guarded_drive())
     return es
 
 
@@ -153,7 +192,7 @@ class _FauxProvider:
     def stream(
         self,
         model: Model,
-        context: Context,
+        context: TranscriptContext,
         options: StreamOptions | None = None,
     ) -> EventStream[AssistantMessageEvent, AssistantMessage]:
         return _run_faux(model, context, options)
@@ -161,7 +200,7 @@ class _FauxProvider:
     def stream_simple(
         self,
         model: Model,
-        context: Context,
+        context: TranscriptContext,
         options: SimpleStreamOptions | None = None,
     ) -> EventStream[AssistantMessageEvent, AssistantMessage]:
         return _run_faux(model, context, options)

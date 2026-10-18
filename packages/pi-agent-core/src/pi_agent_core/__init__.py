@@ -1,8 +1,10 @@
 """pi-agent-core: Python port of @earendil-works/pi-agent-core.
 
-通用 agent 运行时：双层循环引擎、有状态 Agent 封装、技能加载。
+通用 agent 运行时：双层循环引擎、有状态 Agent 封装、会话/技能/压缩。
 
-对应上游 ``packages/agent``（TypeScript）。
+对应上游 ``packages/agent``（TypeScript）。v1.3.0 起上游本包只剩
+``Agent`` / agent 循环 / proxy / 类型；本端的会话层是自己的 ``sessions`` 子包
+（原 ``harness``），详见 ``PORTING.md``。
 
 快速上手：
     from pi_agent_core import Agent, AgentOptions, AgentTool, AgentToolResult
@@ -23,8 +25,8 @@
 
 from __future__ import annotations
 
-__version__ = "0.85.1"
-__upstream_ref__ = "earendil-works/pi@v0.85.1"
+__version__ = "1.3.0"
+__upstream_ref__ = "earendil-works/pi@v1.3.0"
 
 # ---- 类型 ----
 # ---- 有状态 Agent ----
@@ -36,8 +38,8 @@ from .agent_loop import agent_loop, agent_loop_continue
 # ---- 事件流 ----
 from .event_stream import create_agent_stream
 
-# ---- harness: compaction ----
-from .harness.compaction import (
+# ---- sessions: compaction ----
+from .sessions.compaction import (
     CompactionResult,
     CompactionSettings,
     calculate_context_tokens,
@@ -49,8 +51,8 @@ from .harness.compaction import (
     should_compact,
 )
 
-# ---- harness: session ----
-from .harness.session import (
+# ---- sessions: session ----
+from .sessions.session import (
     InMemorySessionStorage,
     JsonlSessionStorage,
     Session,
@@ -58,8 +60,8 @@ from .harness.session import (
     SessionStorage,
 )
 
-# ---- harness: skills ----
-from .harness.skills import (
+# ---- sessions: skills ----
+from .sessions.skills import (
     LoadSkillsOptions,
     Skill,
     SkillDiagnostic,
@@ -79,16 +81,23 @@ from .types import (
     AgentEvent,
     AgentLoopConfig,
     AgentMessage,
+    AgentRequestUpdate,
     AgentStartEvent,
     AgentState,
     AgentTool,
     AgentToolCall,
     AgentToolResult,
     AgentToolUpdateCallback,
+    AgentTurnContext,
+    AgentTurnDecision,
+    FinishTurn,
     MessageEndEvent,
     MessageStartEvent,
     MessageUpdateEvent,
+    PrepareRequest,
+    PrepareRequestContext,
     QueueMode,
+    RequestThinkingLevel,
     StreamFn,
     ToolExecutionEndEvent,
     ToolExecutionMode,
@@ -107,12 +116,19 @@ __all__ = [
     "AgentEvent",
     "AgentLoopConfig",
     "AgentMessage",
+    "AgentRequestUpdate",
     "AgentStartEvent",
     "AgentState",
     "AgentTool",
     "AgentToolCall",
     "AgentToolResult",
     "AgentToolUpdateCallback",
+    "AgentTurnContext",
+    "AgentTurnDecision",
+    "FinishTurn",
+    "PrepareRequest",
+    "PrepareRequestContext",
+    "RequestThinkingLevel",
     "MessageEndEvent",
     "MessageStartEvent",
     "MessageUpdateEvent",
@@ -132,7 +148,7 @@ __all__ = [
     "AgentOptions",
     # 事件流
     "create_agent_stream",
-    # harness: skills
+    # sessions: skills
     "Skill",
     "SkillDiagnostic",
     "SkillLoadResult",
@@ -145,13 +161,13 @@ __all__ = [
     "load_skills",
     "format_skills_for_prompt",
     "format_skill_invocation",
-    # harness: session
+    # sessions: session
     "Session",
     "SessionEntry",
     "SessionStorage",
     "InMemorySessionStorage",
     "JsonlSessionStorage",
-    # harness: compaction
+    # sessions: compaction
     "CompactionResult",
     "CompactionSettings",
     "calculate_context_tokens",

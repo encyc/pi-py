@@ -21,6 +21,7 @@ from pi_ai import (
     ToolCall,
     ToolResultMessage,
     UserMessage,
+    normalize_context,
 )
 from pi_ai.events import ErrorEvent, StartEvent
 from pi_ai.providers import anthropic_provider
@@ -29,6 +30,18 @@ from pi_ai.providers.anthropic_provider import (
     _build_thinking_config,
     _convert_messages,
     _convert_tools,
+)
+
+#: 消息转换测试用的"同模型"句柄。必须与测试里 AssistantMessage 的
+#: provider/api/model 三元组一致（provider="anthropic"、api="anthropic-messages"、
+#: model="claude"），否则 v1.3.0 的跨模型思考丢弃（M-6）会按预期丢掉 thinking 块。
+_CONV_MODEL = Model(
+    id="claude",
+    name="claude",
+    api="anthropic-messages",
+    provider="anthropic",
+    base_url="https://api.anthropic.com",
+    reasoning=True,
 )
 
 
@@ -64,14 +77,14 @@ def _budget_model() -> Model:
 def test_system_prompt_separate():
     """system prompt 作为独立参数（非 message）。"""
     ctx = Context(system_prompt="You are helpful.", messages=[UserMessage(content="hi")])
-    messages, system, _ = _convert_messages(ctx)
+    messages, system, _ = _convert_messages(normalize_context(ctx), _CONV_MODEL)
     assert system == [{"type": "text", "text": "You are helpful."}]
     assert messages == [{"role": "user", "content": "hi"}]
 
 
 def test_no_system():
     ctx = Context(messages=[UserMessage(content="hi")])
-    _, system, _ = _convert_messages(ctx)
+    _, system, _ = _convert_messages(normalize_context(ctx), _CONV_MODEL)
     assert system is None
 
 
@@ -87,7 +100,7 @@ def test_user_message_blocks():
             )
         ]
     )
-    messages, _, _ = _convert_messages(ctx)
+    messages, _, _ = _convert_messages(normalize_context(ctx), _CONV_MODEL)
     assert messages[0]["role"] == "user"
     content = messages[0]["content"]
     assert content[0] == {"type": "text", "text": "look"}
@@ -110,7 +123,7 @@ def test_assistant_thinking_with_signature():
             )
         ]
     )
-    messages, _, _ = _convert_messages(ctx)
+    messages, _, _ = _convert_messages(normalize_context(ctx), _CONV_MODEL)
     content = messages[0]["content"]
     assert content[0] == {"type": "thinking", "thinking": "hmm", "signature": "sig123"}
     assert content[1] == {"type": "text", "text": "answer"}
@@ -131,7 +144,7 @@ def test_assistant_tool_use():
             )
         ]
     )
-    messages, _, _ = _convert_messages(ctx)
+    messages, _, _ = _convert_messages(normalize_context(ctx), _CONV_MODEL)
     content = messages[0]["content"]
     assert content[1] == {
         "type": "tool_use",
@@ -164,7 +177,7 @@ def test_consecutive_tool_results_merged():
             ),
         ]
     )
-    messages, _, _ = _convert_messages(ctx)
+    messages, _, _ = _convert_messages(normalize_context(ctx), _CONV_MODEL)
     # assistant 消息 + 一个 user 消息（含两个 tool_result）
     assert len(messages) == 2
     assert messages[1]["role"] == "user"

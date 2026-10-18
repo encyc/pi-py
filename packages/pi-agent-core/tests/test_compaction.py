@@ -148,7 +148,7 @@ def test_find_cut_point_empty():
 
 
 async def test_generate_summary_isolates_routing_session_and_disables_cache(monkeypatch):
-    from pi_agent_core.harness import compaction
+    from pi_agent_core.sessions import compaction
 
     captured = []
 

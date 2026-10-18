@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pi_agent_core import AgentContext, AgentLoopConfig, agent_loop
 from pi_agent_core.types import AgentToolResult
 from pi_ai import (
@@ -194,7 +196,8 @@ async def test_event_types_complete():
 
 
 # ============================================================
-# v0.84.1: blocked tool terminate / should_stop_after_turn / reset guard
+# v0.84.1: blocked tool terminate / reset guard
+# v1.3.0: should_stop_after_turn → finish_turn
 # ============================================================
 
 
@@ -244,16 +247,16 @@ async def test_before_tool_call_block_without_terminate_continues():
     assert assistants[1].content[0].text == "done"
 
 
-async def test_should_stop_after_turn_ends_loop():
-    """should_stop_after_turn 返回 True：工具轮结束后立即终止，不发起下一轮。"""
+async def test_finish_turn_end_ends_loop():
+    """finish_turn 返回 {"action": "end"}：工具轮结束后立即终止，不发起下一轮。"""
     push_script(FauxScript(tool_calls=[ToolCall(id="c1", name="echo", arguments={"text": "x"})]))
 
-    async def stop(ctx_):
-        return True
+    async def finish(turn, cancel):
+        return {"action": "end"}
 
     ctx = AgentContext(system_prompt="", messages=[], tools=[_EchoTool()])
     config = AgentLoopConfig(model=_faux_model(), tool_execution="parallel")
-    config.should_stop_after_turn = stop
+    config.finish_turn = finish
 
     es = agent_loop([UserMessage(content="go")], ctx, config)
     events = await _collect(es)
@@ -264,17 +267,60 @@ async def test_should_stop_after_turn_ends_loop():
     assert len(assistants) == 1  # 仅工具调用轮，无后续
 
 
-async def test_should_stop_after_turn_false_continues():
-    """should_stop_after_turn 返回 False：循环正常继续。"""
+async def test_finish_turn_end_runs_before_turn_end():
+    """finish_turn 在 turn_end 之前运行，决策在 turn_end 之后生效。"""
+    order: list[str] = []
+    push_script(FauxScript(tool_calls=[ToolCall(id="c1", name="echo", arguments={"text": "x"})]))
+
+    def finish(turn, cancel):
+        order.append("finish_turn")
+        return {"action": "end"}
+
+    config = AgentLoopConfig(model=_faux_model(), tool_execution="parallel", finish_turn=finish)
+    ctx = AgentContext(system_prompt="", messages=[], tools=[_EchoTool()])
+
+    es = agent_loop([UserMessage(content="go")], ctx, config)
+    async for ev in es:
+        if ev.type == "turn_end":
+            order.append("turn_end")
+        elif ev.type == "agent_end":
+            order.append("agent_end")
+
+    assert order == ["finish_turn", "turn_end", "agent_end"]
+
+
+async def test_finish_turn_continue_forces_extra_request():
+    """finish_turn 返回 {"action": "continue"}：即使没有工具调用/steering，也再发一次请求。"""
+    push_script(FauxScript(text="first"))
+    push_script(FauxScript(text="second"))
+
+    calls: list[int] = []
+
+    def finish(turn, cancel):
+        calls.append(1)
+        return {"action": "continue"} if len(calls) == 1 else None
+
+    config = AgentLoopConfig(model=_faux_model(), tool_execution="parallel", finish_turn=finish)
+    ctx = AgentContext(system_prompt="", messages=[], tools=None)
+
+    es = agent_loop([UserMessage(content="go")], ctx, config)
+    messages = await _collect_result(es)
+
+    assistants = [m for m in messages if isinstance(m, AssistantMessage)]
+    assert len(assistants) == 2
+    assert assistants[1].content[0].text == "second"
+
+
+async def test_finish_turn_none_keeps_normal_scheduling():
+    """finish_turn 返回 None：循环正常继续（工具结果自然选中下一轮）。"""
     push_script(FauxScript(tool_calls=[ToolCall(id="c1", name="echo", arguments={"text": "x"})]))
     push_script(FauxScript(text="after"))
 
-    async def stop(ctx_):
-        return False
+    async def finish(turn, cancel):
+        return None
 
     ctx = AgentContext(system_prompt="", messages=[], tools=[_EchoTool()])
-    config = AgentLoopConfig(model=_faux_model(), tool_execution="parallel")
-    config.should_stop_after_turn = stop
+    config = AgentLoopConfig(model=_faux_model(), tool_execution="parallel", finish_turn=finish)
 
     es = agent_loop([UserMessage(content="go")], ctx, config)
     await _collect(es)
@@ -282,6 +328,431 @@ async def test_should_stop_after_turn_false_continues():
 
     assistants = [m for m in messages if isinstance(m, AssistantMessage)]
     assert len(assistants) == 2
+
+
+async def test_finish_turn_bool_migration_form():
+    """finish_turn 兼容 bool（便于从已移除的 should_stop_after_turn 迁移）。"""
+    push_script(FauxScript(tool_calls=[ToolCall(id="c1", name="echo", arguments={"text": "x"})]))
+
+    ctx = AgentContext(system_prompt="", messages=[], tools=[_EchoTool()])
+    config = AgentLoopConfig(
+        model=_faux_model(),
+        tool_execution="parallel",
+        finish_turn=lambda turn, cancel: True,
+    )
+
+    es = agent_loop([UserMessage(content="go")], ctx, config)
+    await _collect(es)
+    messages = await es.result()
+
+    assert len([m for m in messages if isinstance(m, AssistantMessage)]) == 1
+
+
+async def test_finish_turn_sees_error_response_but_decision_ignored():
+    """error 响应：finish_turn 仍被调用（看到 stop_reason=error），但其决策被忽略。"""
+    push_script(FauxScript(error="boom"))
+
+    seen: list[tuple[str, bool]] = []
+
+    async def finish(turn, cancel):
+        seen.append((turn.message.stop_reason, bool(turn.tool_results)))
+        return {"action": "continue"}  # 硬退出下必须被忽略
+
+    config = AgentLoopConfig(model=_faux_model(), tool_execution="parallel", finish_turn=finish)
+    ctx = AgentContext(system_prompt="", messages=[], tools=None)
+
+    es = agent_loop([UserMessage(content="go")], ctx, config)
+    events = await _collect(es)
+    messages = await es.result()
+
+    assert seen == [("error", False)]
+    # 只有一次 assistant（error），没有被 continue 拖出第二轮
+    assert len([m for m in messages if isinstance(m, AssistantMessage)]) == 1
+    assert events[-1].type == "agent_end"
+
+
+async def test_finish_turn_sees_aborted_response_but_decision_ignored():
+    """aborted 响应：finish_turn 仍被调用，其决策被忽略。"""
+    from pi_ai import EventStream
+    from pi_ai.events import ErrorEvent
+
+    def aborted_stream_fn(model, context, options):
+        """产出以 stop_reason="aborted" 终止的流。
+
+        不走 faux 的 ``FauxScript(stop_reason="aborted")``：pi-ai 的 ``DoneEvent.reason``
+        字面量只允许 stop/length/toolUse，faux 会在 push DoneEvent 时抛 ValidationError
+        并让流永不结束。真实 provider 用 ``ErrorEvent(reason="aborted", ...)`` 终止，
+        这里照此构造。
+        """
+        es: EventStream = EventStream()
+        msg = AssistantMessage(
+            content=[TextContent(text="ignored")],
+            stop_reason="aborted",
+            api=model.api,
+            provider=model.provider,
+            model=model.id,
+        )
+        es.push(ErrorEvent(reason="aborted", error=msg))
+        es.end(msg)
+        return es
+
+    seen: list[str] = []
+
+    async def finish(turn, cancel):
+        seen.append(turn.message.stop_reason)
+        return {"action": "end"}
+
+    config = AgentLoopConfig(model=_faux_model(), tool_execution="parallel", finish_turn=finish)
+    ctx = AgentContext(system_prompt="", messages=[], tools=None)
+
+    es = agent_loop([UserMessage(content="go")], ctx, config, stream_fn=aborted_stream_fn)
+    events = await _collect(es)
+    messages = await es.result()
+
+    assert seen == ["aborted"]
+    assert len([m for m in messages if isinstance(m, AssistantMessage)]) == 1
+    assert events[-1].type == "agent_end"
+
+
+async def test_finish_turn_receives_turn_context():
+    """finish_turn 的入参是 AgentTurnContext：属性访问与下标访问都可用。"""
+    push_script(FauxScript(tool_calls=[ToolCall(id="c1", name="echo", arguments={"text": "x"})]))
+    push_script(FauxScript(text="after"))
+
+    captured: list[Any] = []
+
+    def finish(turn, cancel):
+        captured.append(turn)
+        return None
+
+    config = AgentLoopConfig(model=_faux_model(), tool_execution="parallel", finish_turn=finish)
+    ctx = AgentContext(system_prompt="", messages=[], tools=[_EchoTool()])
+
+    es = agent_loop([UserMessage(content="go")], ctx, config)
+    await _collect(es)
+
+    first = captured[0]
+    assert first.message.stop_reason == "toolUse"
+    assert len(first.tool_results) == 1
+    assert first.context is not None
+    # 下标访问（prepare_next_turn 历史沿用）与驼峰别名
+    assert first["message"] is first.message
+    assert first["toolResults"] is first.tool_results
+    assert first["newMessages"] is first.new_messages
+
+
+# ============================================================
+# v1.3.0: prepare_request
+# ============================================================
+
+
+async def test_prepare_request_runs_on_first_request():
+    """prepare_request 在第一次请求前就运行（含首次）。"""
+    push_script(FauxScript(text="hi"))
+
+    seen: list[str] = []
+
+    def prepare_request(request, cancel):
+        seen.append(request.model.provider)
+        return None
+
+    config = AgentLoopConfig(
+        model=_faux_model(), tool_execution="parallel", prepare_request=prepare_request
+    )
+    ctx = AgentContext(system_prompt="", messages=[], tools=None)
+
+    es = agent_loop([UserMessage(content="go")], ctx, config)
+    await _collect(es)
+
+    assert seen == ["faux"]
+
+
+async def test_prepare_request_can_replace_context():
+    """prepare_request 可替换本次请求的 context（例如装入规范化上下文）。"""
+    push_script(FauxScript(text="hi"))
+
+    def prepare_request(request, cancel):
+        return {
+            "context": AgentContext(
+                system_prompt="replaced",
+                messages=[UserMessage(content="canonical")],
+                tools=None,
+            )
+        }
+
+    seen: list[Any] = []
+    from pi_ai.providers.faux import faux_api_provider
+
+    inner_stream = faux_api_provider.stream_simple
+
+    def capturing_stream_fn(model, context, options):
+        seen.append(context)
+        return inner_stream(model, context, options)
+
+    config = AgentLoopConfig(
+        model=_faux_model(), tool_execution="parallel", prepare_request=prepare_request
+    )
+    ctx = AgentContext(system_prompt="orig", messages=[], tools=None)
+
+    es = agent_loop([UserMessage(content="go")], ctx, config, stream_fn=capturing_stream_fn)
+    await _collect(es)
+
+    assert seen[0].system_prompt == "replaced"
+    assert [m.content for m in seen[0].messages] == ["canonical"]
+
+
+async def test_prepare_request_off_thinking_level():
+    """prepare_request 返回 thinkingLevel="off" 清除 reasoning。"""
+    push_script(FauxScript(text="hi"))
+
+    from pi_ai.providers.faux import faux_api_provider
+
+    seen_reasoning: list = []
+    inner_stream = faux_api_provider.stream_simple
+
+    def capturing_stream_fn(model, context, options):
+        seen_reasoning.append(getattr(options, "reasoning", None) if options else None)
+        return inner_stream(model, context, options)
+
+    config = AgentLoopConfig(
+        model=_faux_model(),
+        tool_execution="parallel",
+        reasoning="high",
+        prepare_request=lambda request, cancel: {"thinkingLevel": "off"},
+    )
+    ctx = AgentContext(system_prompt="", messages=[], tools=None)
+
+    es = agent_loop([UserMessage(content="hi")], ctx, config, stream_fn=capturing_stream_fn)
+    await _collect(es)
+
+    assert seen_reasoning == [None]
+
+
+async def test_prepare_request_sees_pending_messages_already_appended():
+    """prepare_request 运行时，待处理（steering）消息已追加到 context。"""
+    push_script(FauxScript(text="hi"))
+
+    seen: list[int] = []
+    steering: list = [UserMessage(content="steered")]
+
+    def get_steering():
+        # 只投递一次，否则每轮都会重新排入导致循环不终止
+        return [steering.pop()] if steering else []
+
+    def prepare_request(request, cancel):
+        seen.append(len(request.context.messages))
+        return None
+
+    config = AgentLoopConfig(
+        model=_faux_model(),
+        tool_execution="parallel",
+        prepare_request=prepare_request,
+        get_steering_messages=get_steering,
+    )
+    ctx = AgentContext(system_prompt="", messages=[], tools=None)
+
+    es = agent_loop([UserMessage(content="go")], ctx, config)
+    await _collect(es)
+
+    # prompt(1) + steering(1) 都已追加
+    assert seen == [2]
+
+
+# ============================================================
+# v1.3.0: AgentToolResult.structured_content / is_error / output_schema
+# ============================================================
+
+
+class _SchemaTool:
+    """声明 output_schema 并返回 structured_content 的工具。"""
+
+    name = "schema_tool"
+    description = "返回结构化结果"
+    parameters = {"type": "object", "properties": {}}
+    label = "Schema"
+    execution_mode = None
+    output_schema = {
+        "type": "object",
+        "properties": {"lines": {"type": "number"}},
+        "required": ["lines"],
+    }
+
+    async def execute(self, tool_call_id, params, cancel_event=None, on_update=None):
+        return AgentToolResult(
+            content=[TextContent(text="3 lines")],
+            details={"path": "x"},
+            structured_content={"lines": 3},
+            usage=None,
+        )
+
+
+async def test_tool_structured_content_reaches_event_and_not_transcript():
+    """output_schema/structured_content：程序调用方经事件拿到；transcript 不存。"""
+    push_script(FauxScript(tool_calls=[ToolCall(id="c1", name="schema_tool", arguments={})]))
+    push_script(FauxScript(text="done"))
+
+    config = AgentLoopConfig(model=_faux_model(), tool_execution="parallel")
+    ctx = AgentContext(system_prompt="", messages=[], tools=[_SchemaTool()])
+
+    es = agent_loop([UserMessage(content="go")], ctx, config)
+    events = await _collect(es)
+    messages = await es.result()
+
+    ends = [e for e in events if e.type == "tool_execution_end"]
+    assert len(ends) == 1
+    assert ends[0].result.structured_content == {"lines": 3}
+    assert ends[0].is_error is False
+
+    tr = [m for m in messages if isinstance(m, ToolResultMessage)][0]
+    assert tr.is_error is False
+    assert tr.content[0].text == "3 lines"
+    # structured_content 不写入 transcript
+    assert not hasattr(tr, "structured_content")
+
+
+async def test_tool_is_error_flag_without_exception():
+    """工具用 is_error=True 报告失败（不抛异常）：模型看到错误结果，details 保留。"""
+    push_script(FauxScript(tool_calls=[ToolCall(id="c1", name="failing", arguments={})]))
+    push_script(FauxScript(text="done"))
+
+    class _FailingTool(_EchoTool):
+        name = "failing"
+
+        async def execute(self, tool_call_id, params, cancel_event=None, on_update=None):
+            return AgentToolResult(
+                content=[TextContent(text="could not do it")],
+                details={"reason": "nope"},
+                structured_content={"ok": False},
+                is_error=True,
+            )
+
+    config = AgentLoopConfig(model=_faux_model(), tool_execution="parallel")
+    ctx = AgentContext(system_prompt="", messages=[], tools=[_FailingTool()])
+
+    es = agent_loop([UserMessage(content="go")], ctx, config)
+    events = await _collect(es)
+    messages = await es.result()
+
+    ends = [e for e in events if e.type == "tool_execution_end"]
+    assert ends[0].is_error is True
+
+    tr = [m for m in messages if isinstance(m, ToolResultMessage)][0]
+    assert tr.is_error is True
+    assert tr.content[0].text == "could not do it"
+    assert tr.details == {"reason": "nope"}
+
+
+async def test_tool_execution_end_carries_usage_and_added_tool_names():
+    """结果里的 usage / added_tool_names 透传到 ToolResultMessage。"""
+
+    class _UsageTool(_EchoTool):
+        name = "usage_tool"
+
+        async def execute(self, tool_call_id, params, cancel_event=None, on_update=None):
+            from pi_ai import Usage
+
+            return AgentToolResult(
+                content=[TextContent(text="ok")],
+                usage=Usage(input=3, output=4, total_tokens=7),
+                added_tool_names=["extra"],
+            )
+
+    push_script(FauxScript(tool_calls=[ToolCall(id="c1", name="usage_tool", arguments={})]))
+    push_script(FauxScript(text="done"))
+
+    config = AgentLoopConfig(model=_faux_model(), tool_execution="parallel")
+    ctx = AgentContext(system_prompt="", messages=[], tools=[_UsageTool()])
+
+    es = agent_loop([UserMessage(content="go")], ctx, config)
+    await _collect(es)
+    messages = await es.result()
+
+    tr = [m for m in messages if isinstance(m, ToolResultMessage)][0]
+    assert tr.usage is not None and tr.usage.total_tokens == 7
+    assert tr.added_tool_names == ["extra"]
+
+
+# ============================================================
+# v1.3.0: Agent 级 finish_turn / prepare_request / system_prompt 只读
+# ============================================================
+
+
+async def test_agent_finish_turn_wired_and_ends_run():
+    """AgentOptions.finish_turn 透传到 loop：返回 {"action": "end"} 结束本次 run。"""
+    from pi_agent_core import Agent, AgentOptions
+
+    push_script(FauxScript(tool_calls=[ToolCall(id="c1", name="echo", arguments={"text": "x"})]))
+
+    calls: list[str] = []
+
+    def finish(turn, cancel):
+        calls.append(turn.message.stop_reason)
+        return {"action": "end"}
+
+    agent = Agent(
+        AgentOptions(
+            initial_state={"model": _faux_model(), "tools": [_EchoTool()]},
+            finish_turn=finish,
+        )
+    )
+    await agent.prompt("go")
+
+    assert calls == ["toolUse"]
+    assistants = [m for m in agent.state.messages if isinstance(m, AssistantMessage)]
+    assert len(assistants) == 1
+
+
+async def test_agent_prepare_request_wired():
+    """AgentOptions.prepare_request 透传到 loop，且在第一次请求前运行。"""
+    from pi_agent_core import Agent, AgentOptions
+
+    push_script(FauxScript(text="hi"))
+
+    seen: list[int] = []
+
+    def prepare_request(request, cancel):
+        seen.append(len(request.context.messages))
+        return {"context": AgentContext(system_prompt="patched", messages=[], tools=None)}
+
+    agent = Agent(
+        AgentOptions(
+            initial_state={"model": _faux_model(), "system_prompt": "orig"},
+            prepare_request=prepare_request,
+        )
+    )
+    await agent.prompt("go")
+
+    assert seen == [1]
+    assert agent.state.system_prompt == "orig"  # prepare_request 不改 Agent 自身状态
+
+
+def test_agent_initial_state_can_set_system_prompt():
+    """initial_state 里可以给 system_prompt（构造期唯一写入点）。"""
+    from pi_agent_core import Agent, AgentOptions
+
+    agent = Agent(AgentOptions(initial_state={"system_prompt": "你是助手"}))
+    assert agent.state.system_prompt == "你是助手"
+
+
+def test_agent_state_system_prompt_is_read_only():
+    """v1.3.0：state.system_prompt 只读（对齐上游 readonly systemPrompt）。"""
+    import pytest
+
+    from pi_agent_core import Agent, AgentOptions
+
+    agent = Agent(AgentOptions(initial_state={"system_prompt": "orig"}))
+    with pytest.raises(AttributeError):
+        agent.state.system_prompt = "changed"  # type: ignore[misc]
+    assert agent.state.system_prompt == "orig"
+
+
+def test_agent_reset_does_not_clear_system_prompt():
+    """reset() 清空消息但不改 system_prompt。"""
+    from pi_agent_core import Agent, AgentOptions
+
+    agent = Agent(AgentOptions(initial_state={"system_prompt": "keep"}))
+    agent.reset()
+    assert agent.state.system_prompt == "keep"
 
 
 def test_agent_reset_rejected_during_active_run():

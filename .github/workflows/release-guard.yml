@@ -1,0 +1,40 @@
+name: Release guard
+
+# Guards the failure mode that let v0.85.1 sit unpublished for weeks:
+# the git tag was pushed, but no GitHub Release was created, so publish.yml
+# (triggered by `release: published`) never ran and nothing complained.
+#
+# The check reads tags from the clone and releases from the API and fails when
+# a semver tag older than the grace window has no published release.
+
+on:
+  schedule:
+    # Daily sweep: catches drift even when nobody pushes anything.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-guard
+  cancel-in-progress: true
+
+jobs:
+  tags-have-releases:
+    name: Every release tag has a GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history + tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check tag <-> Release consistency
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Tags younger than 120 minutes are reported as pending, not failures,
+        # so the normal "push tag, then create the release" flow stays green.
+        run: python3 .github/scripts/check_tag_release_consistency.py --grace-minutes 120
