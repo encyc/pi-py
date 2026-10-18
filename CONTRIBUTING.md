@@ -154,6 +154,34 @@ gh release create vX.Y.Z --title vX.Y.Z --notes-file /tmp/notes.md
 
 补发历史版本：`Actions → Publish to PyPI → Run workflow`，填入已存在的 `tag`。
 
+### ⚠️ 两种触发方式用的**不是同一份** `publish.yml`
+
+这是实测确认的（否则会得出错误的心智模型）：
+
+| 触发方式 | workflow 文件取自 |
+|---|---|
+| `release: published` | **该 tag 自己的内容** |
+| `workflow_dispatch` | **默认分支**（所选 ref）的内容 |
+
+**后果**：给**历史 tag** 补发时，`release` 事件跑的是**那个 tag 当时**的 `publish.yml` ——
+若该 tag 早于某项硬化（例如 `verify-release` 与 PyPI 回读是后加的），**那些检查不会生效**。
+
+**⇒ 补发历史版本请一律走 `workflow_dispatch` 并填 tag**，它才会用到当前的校验链路。
+
+配套地，工作流里**校验脚本取自默认分支、被校验内容取自 tag**（两次检出）：
+历史 tag 上通常没有 `.github/scripts/`，把两者放在同一次检出里会让补发失败在
+「脚本不存在」这一步。
+
+### ⚠️ PyPI 的 JSON 端点会被 CDN 缓存
+
+`https://pypi.org/pypi/<pkg>/json` 可能返回**缓存**的旧版本号，于是**明明发上去了却回读成旧版本**。
+
+**判据**：回读要**两个证据**取其一或并用 ——
+① 版本专用端点 `https://pypi.org/pypi/<pkg>/<version>/json`（存在即已上传）；
+② 主端点带 `Cache-Control: no-cache`。
+
+**不要**用一次主端点的回读就判定「没发上去」—— 那会让你去排查一个不存在的故障。
+
 ## 添加新 provider
 
 1. 在 `packages/pi-ai/src/pi_ai/providers/` 创建新文件
