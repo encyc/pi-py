@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import inspect
 from typing import Any
 
 import pytest
@@ -15,6 +16,7 @@ import pytest
 from pi_chord.context import BACKGROUND_CONTEXT
 from pi_durable.harness.scheduler import (
     _MISSING,
+    Reservation,
     TaskScheduler,
     TaskSchedulerOptions,
     cancellation_intent,
@@ -35,7 +37,25 @@ def scheduler() -> TaskScheduler:
     fields["context"] = BACKGROUND_CONTEXT
     # `_validate_wait` 在 `#live` 里找不到目标时会去存储里查。
     fields["storage"] = _EmptyStorage()
+    # `abort` 会问注册表要一个快照。
+    fields["registry"] = _EmptyRegistry()
+
+    # `_terminate` 在真的没活时要做 Harness 清理（"搭在同一次提交里"）。
+    async def _settle_outcome(tx: Any, rec: Any, outcome: Any) -> None:
+        return None
+
+    fields["settle_outcome"] = _settle_outcome
     return TaskScheduler(TaskSchedulerOptions(**fields))
+
+
+class _EmptyRegistry:
+    """一个没有装任何定义的注册表替身。"""
+
+    def snapshot(self) -> Any:
+        return type("S", (), {"task": lambda self, kind: None})()
+
+    def subscribe(self, listener: Any) -> Any:
+        return lambda: None
 
 
 class _EmptyStorage:
@@ -45,15 +65,26 @@ class _EmptyStorage:
         return None
 
 
+class _OneTaskStorage:
+    """只有一条记录的存储替身。"""
+
+    def __init__(self, record: dict[str, Any]) -> None:
+        self._record = record
+
+    async def task(self, id: int, context: Any) -> Any:
+        return self._record
+
+
 class _FakeSession:
     """一个最小的 Session 替身：``commit_with`` 直接跑回调，并让调用方有机会插队。
 
     这样能测到「**排队之后、真正跑之前**状态变了」——真 Session 的顺序不可控。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, tx: Any = None) -> None:
         self.before_run: Any = None
         self.failure: Any = None
+        self.tx = tx if tx is not None else _FakeTx()
 
     def commit_with(self, change: Any, context: Any, scope: Any = None) -> Any:
         import asyncio
@@ -61,7 +92,7 @@ class _FakeSession:
         async def run() -> Any:
             if self.before_run is not None:
                 self.before_run()
-            return await change(None)
+            return await change(self.tx)
 
         return asyncio.ensure_future(run())
 
@@ -69,6 +100,13 @@ class _FakeSession:
         import asyncio
 
         return asyncio.ensure_future(job())
+
+    # `open` 要挂三个监听器；这里记下来即可（本文件不驱动它们）。
+    def observe_commits(self, listener: Any) -> None:
+        self.commit_listener = listener
+
+    def subscribe_close(self, listener: Any) -> None:
+        self.close_listener = listener
 
 
 def record(
@@ -83,6 +121,9 @@ def record(
     outcome: str | None = None,
 ) -> dict[str, Any]:
     state: dict[str, Any] = {"status": status}
+    # ⚠️ **一律带 checkpoint**：上游的 `RunnableTaskRecord` 一定有它，
+    # 而 `_reserve`/`_commit_state` 会**直接下标**它（不是 `.get`）。
+    state["checkpoint"] = {"phase": "p"}
     if status in ("completing", "terminal"):
         state["outcome"] = {"status": outcome or "completed"}
     if status == "waiting":
@@ -1106,6 +1147,10 @@ class _FakeTx:
     def staged_conversations(self) -> list[dict[str, Any]]:
         return []
 
+    async def scan_tasks(self, query: Any, limit: Any, cursor: Any) -> dict[str, Any]:
+        # `open` 会按状态扫表；默认什么也没有（各测试按需覆盖）。
+        return {"items": []}
+
 
 async def test_commit_state_writes_terminal_when_nothing_runs_below() -> None:
     s = scheduler()
@@ -1221,3 +1266,1058 @@ async def test_a_direct_wait_cycle_is_rejected() -> None:
 
     with pytest.raises(RuntimeError, match="is a wait cycle"):
         await s._validate_wait(tx, invocation, s._live[7], [8], "allSettled")
+
+
+# --------------------------------------------------------------------------------------
+# C1：中止与等待（_terminate / abort / wait_for_task）
+# --------------------------------------------------------------------------------------
+
+
+class _AbortTx(_FakeTx):
+    """``abort`` 用的事务替身：``task()`` 返回一条预置记录。"""
+
+    def __init__(self, record: dict[str, Any] | None) -> None:
+        super().__init__()
+        self._record = record
+
+    async def task(self, id: int) -> Any:
+        return self._record
+
+
+def _abort_scheduler(record: dict[str, Any] | None) -> tuple[TaskScheduler, _AbortTx]:
+    s = scheduler()
+    s._session = _FakeSession(_AbortTx(record))
+    return s, s._session.tx  # type: ignore[attr-defined]
+
+
+async def test_terminate_holds_the_outcome_when_children_run() -> None:
+    """⚠️ 与 `_commit_state` 同一条规则：**结果先 held 住**。"""
+    s = scheduler()
+    s._edges[1] = None
+    s._track(None, record(7, status="running"))
+    s._track(None, record(8, owner=7))
+    tx = _FakeTx()
+
+    await s._terminate(tx, s._live[7], {"status": "orphaned", "reason": "missing_task"})
+    assert tx.written[0]["state"]["status"] == "completing"
+
+
+async def test_terminate_writes_terminal_and_settles_the_outcome() -> None:
+    """⚠️ 只有真的没活了才写 ``terminal``，**并在同一次提交里做 Harness 清理**。"""
+    settled: list[Any] = []
+    s = scheduler()
+    s._edges[1] = None
+    s._track(None, record(7, status="running"))
+    s._settle_outcome = lambda tx, rec, outcome: settled.append(outcome) or _done()
+    tx = _FakeTx()
+
+    await s._terminate(tx, s._live[7], {"status": "orphaned", "reason": "missing_task"})
+    assert tx.written[0]["state"]["status"] == "terminal"
+    assert settled == [{"status": "orphaned", "reason": "missing_task"}]
+
+
+async def _done() -> None:
+    return None
+
+
+async def test_abort_reports_a_terminal_task() -> None:
+    s, _ = _abort_scheduler(record(7, status="terminal", outcome="completed"))
+    assert await s.abort(7, BACKGROUND_CONTEXT) == "terminal"
+
+
+async def test_abort_rejects_a_missing_task() -> None:
+    s, _ = _abort_scheduler(None)
+    with pytest.raises(RuntimeError, match="Task 7 does not exist"):
+        await s.abort(7, BACKGROUND_CONTEXT)
+
+
+async def test_abort_keeps_a_restart_mark() -> None:
+    """⚠️ 「重启后等待定义」的任务**保留它的标记**并继续等——
+    拥有者自己的清理会用到这条。"""
+    s, tx = _abort_scheduler(record(7, status="pending"))
+    _ = tx
+    s._live[7] = {**record(7, status="pending"), "abortReason": "restart"}
+
+    assert await s.abort(7, BACKGROUND_CONTEXT, True) == "marked"
+    assert s._live[7]["abortReason"] == "restart"
+
+
+def _marking_scheduler(
+    rec: dict[str, Any],
+) -> tuple[TaskScheduler, list[dict[str, Any]]]:
+    """一个**定义能接下这个任务**的调度器——那样 ``abort`` 走的是「打标记」那条路，
+    而不是「没定义 → 孤立」那条。
+
+    ⚠️ 两条路的区别很重要：**孤立那条会把任务直接结算成终局**（并保留它原有的
+    ``abortReason``——**上游也是这样**，孤立不等于「中止请求被接受」）。
+    """
+    s = scheduler()
+    definition = {"name": "demo", "version": 1}
+    task = type("T", (), {"definition": definition})()
+    s._registry = type(
+        "R", (), {"snapshot": lambda self: type("S", (), {"task": lambda self, kind: task})()}
+    )()
+    s._session = _FakeSession(_AbortTx(rec))
+    s._live[7] = rec
+    return s, s._session.tx.written  # type: ignore[attr-defined]
+
+
+async def test_abort_replaces_a_restart_mark_with_a_request() -> None:
+    """⚠️ 不带 ``abortReason`` 的请求会**替换** ``restart`` 标记。
+
+    不替换的话，一个卡在「等定义」上的任务会**永远等不到中止**——
+    它会一直以为自己是「重启抛弃」的。
+    """
+    s, written = _marking_scheduler({**record(7, status="pending"), "abortReason": "restart"})
+    assert await s.abort(7, BACKGROUND_CONTEXT) == "marked"
+    marked = [w for w in written if w["id"] == 7]
+    assert marked, "应当写下一条标记"
+    assert "abortReason" not in marked[-1]  # restart 被替换掉了
+    assert marked[-1]["abortRequested"] is True
+
+
+async def test_abort_without_a_definition_orphans_and_keeps_the_mark() -> None:
+    """⚠️ **没有定义能接下时，任务被孤立**（不是「标记成功」）——
+    而且**它原有的 ``abortReason`` 留着**（上游也是这样）。
+
+    **孤立 ≠ 中止请求被接受**：前者是「没人能跑它了」，后者是「有人要求它停」。
+    """
+    s, _ = _abort_scheduler({**record(7, status="pending"), "abortReason": "restart"})
+    s._live[7] = {**record(7, status="pending"), "abortReason": "restart"}
+    assert await s.abort(7, BACKGROUND_CONTEXT) == "marked"
+
+    written = s._session.tx.written  # type: ignore[attr-defined]
+    assert written and written[-1]["state"]["status"] == "terminal"
+    assert written[-1]["state"]["outcome"]["status"] == "orphaned"
+    assert written[-1]["abortReason"] == "restart"
+
+
+async def test_wait_for_task_rejects_a_missing_task() -> None:
+    s = scheduler()
+    s._storage = _EmptyStorage()
+    s._session = _FakeSession()
+    with pytest.raises(RuntimeError, match="Task 7 does not exist"):
+        await s.wait_for_task(7, BACKGROUND_CONTEXT)
+
+
+async def test_wait_for_task_returns_a_terminal_record_at_once() -> None:
+    s = scheduler()
+    s._storage = _OneTaskStorage(record(7, status="terminal", outcome="completed"))
+    s._session = _FakeSession()
+    settled = await s.wait_for_task(7, BACKGROUND_CONTEXT)
+    assert settled["state"]["status"] == "terminal"
+
+
+async def test_wait_for_task_registers_a_waiter_for_a_live_task() -> None:
+    """⚠️ **查与登记在同一条会话线上**——否则一次终局发布可能落在两者之间，
+    这个等待**永远不会被唤醒**。"""
+    s = scheduler()
+    s._edges[1] = None
+    s._track(None, record(7, status="running"))
+    s._session = _FakeSession()
+
+    waiting = asyncio.ensure_future(s.wait_for_task(7, BACKGROUND_CONTEXT))
+    await asyncio.sleep(0.01)
+    assert not waiting.done()  # 挂在一个等待者上
+
+    s._task_waiters.resolve(7, {"id": 7})
+    assert await asyncio.wait_for(waiting, 2) == {"id": 7}
+
+
+async def test_wait_for_task_rejects_while_closing() -> None:
+    s = scheduler()
+    s._closing = True
+    s._session = _FakeSession()
+    with pytest.raises(RuntimeError):
+        await s.wait_for_task(7, BACKGROUND_CONTEXT)
+
+
+# --------------------------------------------------------------------------------------
+# `_RuntimeView` 满足 `TaskRuntime` 契约（**基于真实实例**）
+# --------------------------------------------------------------------------------------
+
+
+def _runtime_instance() -> Any:
+    """造一个**真实的** runtime 视图：调度器 → 调用 → 阶段 → 视图。"""
+    from pi_durable.harness.scheduler import Phase as SchedulerPhase
+
+    s = scheduler()
+    s._edges[1] = None
+    s._track(None, record(7, status="running"))
+    invocation = s._create_invocation(s._live[7], "run")
+    snapshot = s._registry.snapshot()
+    phase = SchedulerPhase(
+        snapshot=lambda: snapshot, task=lambda: type("T", (), {"definition": {"name": "demo"}})()
+    )
+    return s, s._runtime(invocation, phase)
+
+
+def test_runtime_view_satisfies_the_task_runtime_contract() -> None:
+    """⚠️ **对**一个真实实例断言，而不是对类。
+
+    `dir(类)` 断言的是「类对象上有这些名字」，而契约要的是
+    「**一个真实的 runtime 实例**在行为上满足它」——两者在"名字在不在"上等价，
+    **在"能不能用"上不等价**。（我原本想用 `dir(_RuntimeView)` 交差，被自己写下的
+    〈便宜的替代物〉拦住了。）
+
+    ⚠️ 与 `test_transaction_class_satisfies_the_tx_contract` 的唯一区别：
+    那个当时已经有实例（`Transaction` 是现成的实现），这个要**先有工厂**。
+    """
+    from pi_durable.harness.runtime import TaskRuntime
+
+    _scheduler, runtime = _runtime_instance()
+    required = {n for n in dir(TaskRuntime) if not n.startswith("_")}
+    have = {n for n in dir(runtime) if not n.startswith("_")}
+    assert required <= have, f"缺：{sorted(required - have)}"
+
+
+def test_runtime_view_exposes_the_invocation_identity() -> None:
+    """三个身份成员直接来自调用：**一次调用不换任务、不换对话、不换信号**。"""
+    _scheduler, runtime = _runtime_instance()
+    assert runtime.task_id == 7
+    assert runtime.conversation_id == 1
+    assert runtime.signal is not None
+
+
+def test_runtime_view_hooks_is_itself() -> None:
+    """``hooks`` 就是**这个视图自己**——它实现了 ``HookRunner.each``。"""
+    from pi_durable.harness.types import HookRunner
+
+    _scheduler, runtime = _runtime_instance()
+    assert runtime.hooks is runtime
+    assert hasattr(runtime, "each")
+    assert {n for n in dir(HookRunner) if not n.startswith("_")} <= {
+        n for n in dir(runtime) if not n.startswith("_")
+    }
+
+
+async def test_runtime_view_rejects_every_read_once_the_invocation_ended() -> None:
+    """⚠️ 调用结束后**所有读**都拒绝——不拦的话，已结束的调用能读到**它不该再看到的状态**，
+    而它拿到的每个值都可能在写回时撞上「任务已终局」。"""
+    s, runtime = _runtime_instance()
+    s._end(runtime.invocation)
+
+    with pytest.raises(RuntimeError, match="invocation has ended"):
+        runtime.now()
+    with pytest.raises(RuntimeError, match="invocation has ended"):
+        runtime.report(RuntimeError("x"))
+    with pytest.raises(RuntimeError, match="invocation has ended"):
+        await runtime.agent(BACKGROUND_CONTEXT)
+
+
+def test_runtime_view_agent_is_resolved_at_most_once_per_phase() -> None:
+    """⚠️ **每个阶段至多解析一次**：第一个调用者建它，之后所有人复用。
+
+    每次重新解析会**毁掉这条语义**——而 agent 的解析要读注册表与设置，
+    重复解析会让同一阶段里的两次调用看到**不同的 agent**。
+    """
+    calls: list[int] = []
+
+    async def resolve(conversation_id: int, snapshot: Any, context: Any) -> Any:
+        calls.append(conversation_id)
+        return "the-agent"
+
+    s, runtime = _runtime_instance()
+    s._agent = resolve
+
+    assert asyncio.run(runtime.agent(BACKGROUND_CONTEXT)) == "the-agent"
+    assert asyncio.run(runtime.agent(BACKGROUND_CONTEXT)) == "the-agent"
+    assert calls == [1]  # 只解析了一次
+
+
+def test_runtime_view_exposes_models_without_touching_the_omitted_ones() -> None:
+    """⚠️ `pi_ai.Models` 是 **9/24**——视图**只转发**它，不碰那 15 个未声明成员。"""
+    sentinel = object()
+    s, runtime = _runtime_instance()
+    s._models = sentinel
+    assert runtime.models is sentinel
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda r: r.now(),
+        lambda r: r.report(RuntimeError("x")),
+        lambda r: r.snapshot("t"),
+        lambda r: r.snapshot_as_of("t", 1),
+        lambda r: r.get_task(1, BACKGROUND_CONTEXT),
+        lambda r: r.wait_for_task(1, BACKGROUND_CONTEXT),
+        lambda r: r.owned_tasks(BACKGROUND_CONTEXT),
+        lambda r: r.abort_owned(1, BACKGROUND_CONTEXT),
+        lambda r: r.outcomes([1], BACKGROUND_CONTEXT),
+        lambda r: r.conversation(1, BACKGROUND_CONTEXT),
+        lambda r: r.entry(1, BACKGROUND_CONTEXT),
+        lambda r: r.context(1, BACKGROUND_CONTEXT),
+        lambda r: r.agent(BACKGROUND_CONTEXT),
+        lambda r: r.sleep(0, BACKGROUND_CONTEXT),
+        lambda r: r.watch_doc("t"),
+        lambda r: r.env(BACKGROUND_CONTEXT),
+    ],
+    ids=lambda f: "read",
+)
+async def test_every_read_rejects_once_the_invocation_ended(call: Any) -> None:
+    """⚠️ **参数化覆盖每一个读方法**，而不是只测一两个。
+
+    「漏拦一个」的症状是**某一条读路径静默泄漏**——它不会报错，
+    只会让一个已结束的调用读到它不该再看到的状态。所以必须**逐个**钉住。
+    """
+    s, runtime = _runtime_instance()
+    s._end(runtime.invocation)
+
+    # ⚠️ 有些读**同步抛**（``now``/``report``），有些返回**已拒绝的 awaitable**
+    # （``_read`` 包装过的）——所以 `pytest.raises` 必须**同时罩住取结果与 await**。
+    with pytest.raises(RuntimeError, match="invocation has ended"):
+        result = call(runtime)
+        if inspect.isawaitable(result):
+            await result
+
+
+# --------------------------------------------------------------------------------------
+# C6：阶段裁决（_step / _decide）
+# --------------------------------------------------------------------------------------
+
+
+def _step_scheduler(rec: dict[str, Any]) -> tuple[TaskScheduler, Any]:
+    s = scheduler()
+    s._session = _FakeSession()
+    s._live[7] = rec
+    s._edges[1] = None
+    s._runnable.add(7)
+    invocation = s._create_invocation(rec, "run")
+    return s, invocation
+
+
+async def test_step_returns_the_current_record_when_the_decision_is_true() -> None:
+    s, invocation = _step_scheduler(record(7, status="running"))
+    current = await s._step(invocation, lambda tx, cur: True)
+    assert current is not None and current["id"] == 7
+    assert invocation.ended is False  # 继续，所以没结束
+
+
+async def test_step_ends_the_invocation_when_the_decision_is_false() -> None:
+    s, invocation = _step_scheduler(record(7, status="running"))
+    assert await s._step(invocation, lambda tx, cur: False) is None
+    assert invocation.ended is True
+
+
+async def test_step_treats_a_non_running_task_as_a_false_decision() -> None:
+    """⚠️ **只有 ``running`` 才算数**——别的一律按「结束」处理。
+
+    否则一个已经变成 ``waiting`` 的任务会被**再跑一个 phase**，
+    而它的检查点已经不属于那个阶段了。
+    """
+    s, invocation = _step_scheduler(record(7, status="waiting", on=[]))
+    called: list[bool] = []
+
+    def decide(tx: Any, cur: Any) -> bool:
+        called.append(True)
+        return True
+
+    assert await s._step(invocation, decide) is None
+    assert called == []  # `decide` **根本没被调**
+    assert invocation.ended is True
+
+
+async def test_step_does_not_call_decide_while_closing() -> None:
+    """⚠️ 正在关闭时**不该再跑任何任务代码**。"""
+    s, invocation = _step_scheduler(record(7, status="running"))
+    s._closing = True
+    called: list[bool] = []
+
+    assert await s._step(invocation, lambda tx, cur: called.append(True) or False) is None
+    assert called == []
+
+
+async def test_a_first_phase_continues() -> None:
+    """规则 5：``previous is None``（第一次）→ 继续。"""
+    s = scheduler()
+    tx = _FakeTx()
+    assert s._decide(tx, record(7, status="running"), None, _decide_state(s)) is True
+
+
+async def test_a_failure_from_the_previous_phase_faults() -> None:
+    """规则 6：**未捕获的错误** → 出错。"""
+    s = scheduler()
+    tx = _FakeTx()
+    error = RuntimeError("boom")
+    decision = s._decide(
+        tx,
+        record(7, status="running"),
+        {"checkpoint": {"phase": "p"}, "failure": {"error": error}},
+        _decide_state(s),
+    )
+    assert decision == {"fault": error}
+
+
+async def test_no_durable_progress_faults() -> None:
+    """规则 7：**检查点没变** → 出错。
+
+    ⚠️ 这条规则防的是「一个 phase 处理器什么都不做就返回」——
+    那会让 run 循环**空转**（既没有进展、也不结束）。
+    """
+    s = scheduler()
+    tx = _FakeTx()
+    current = record(7, status="running")
+    current["state"]["checkpoint"] = {"phase": "same"}
+    decision = s._decide(tx, current, {"checkpoint": {"phase": "same"}}, _decide_state(s))
+    assert "fault" in decision
+    assert "without durable progress" in str(decision["fault"])
+
+
+async def test_an_abort_mark_ends_without_faulting() -> None:
+    """规则 3：中止标记 → 结束，**但不算出错**（它是一次正常的中止）。"""
+    s = scheduler()
+    tx = _FakeTx()
+    decision = s._decide(
+        tx, record(7, status="running", abort_requested=True), None, _decide_state(s)
+    )
+    assert decision is False
+
+
+async def test_a_definition_that_can_take_over_hands_the_task_back() -> None:
+    """规则 8：定义换了但**能接下** → 交接：任务回到 ``pending``，等下一次预留。"""
+    s = scheduler()
+    tx = _FakeTx()
+    newer = type("T", (), {"definition": {"version": 1}})()
+    # ⚠️ **不能往 `state["snapshot"]` 里注入**：`_decide` 会**重新读** `_registry.snapshot()`
+    # （那正是规则 8 的意思——**有进展就要刷新快照**）。所以只能从注册表下手。
+    s._registry = type(
+        "R", (), {"snapshot": lambda self: type("S", (), {"task": lambda self, kind: newer})()}
+    )()
+    state = _decide_state(s)
+    current = record(7, status="running")
+    current["state"]["checkpoint"] = {"phase": "next"}
+
+    decision = s._decide(tx, current, {"checkpoint": {"phase": "prev"}}, state)
+    assert decision is False
+    assert tx.written[0]["state"]["status"] == "pending"
+
+
+def _decide_state(s: TaskScheduler) -> dict[str, Any]:
+    definition = type("T", (), {"definition": {"name": "demo", "version": 1}})()
+    return {
+        "task": definition,
+        "snapshot": s._registry.snapshot(),
+        "reported": None,
+    }
+
+
+# --------------------------------------------------------------------------------------
+# C6：中止处理器（_run_abort）
+# --------------------------------------------------------------------------------------
+
+
+def _abort_reservation(
+    *, status: str = "running", abort_impl: Any = None, closing: bool = False
+) -> tuple[TaskScheduler, Any, list[str]]:
+    s = scheduler()
+    s._session = _FakeSession()
+    rec = record(7, status=status)
+    s._live[7] = rec
+    s._edges[1] = None
+    s._closing = closing
+    invocation = s._create_invocation(rec, "abort")
+    seen: list[str] = []
+
+    async def default_abort(current: Any, runtime: Any, context: Any) -> None:
+        seen.append("ran")
+
+    definition = {"name": "demo", "version": 1, "abort": abort_impl or default_abort}
+    task = type("T", (), {"definition": definition})()
+    return s, Reservation(invocation=invocation, task=task, snapshot=s._registry.snapshot()), seen
+
+
+async def test_run_abort_runs_the_handler_once() -> None:
+    """⚠️ **只跑一次**——与 `_run` 的循环不同，中止处理器没有阶段可推进。"""
+    s, reservation, seen = _abort_reservation()
+    await s._run_abort(reservation)
+    assert seen == ["ran"]
+
+
+async def test_run_abort_does_nothing_when_already_terminal() -> None:
+    """⚠️ 已终局 → **什么都不做**：既不该跑任务代码，也没有状态可写。"""
+    s, reservation, seen = _abort_reservation(status="terminal")
+    await s._run_abort(reservation)
+    assert seen == []
+
+
+async def test_run_abort_does_nothing_while_closing() -> None:
+    """⚠️ 正在关闭 → 不跑任务代码。"""
+    s, reservation, seen = _abort_reservation(closing=True)
+    await s._run_abort(reservation)
+    assert seen == []
+
+
+async def test_a_handler_that_returns_without_an_outcome_faults() -> None:
+    """⚠️ **返回而没给出终局结果 = 出错**。
+
+    这是「中止处理器不能什么都不做」的**强制点**——否则任务会停在
+    「中止已跑、但没有任何终局记录」的状态上，而它**永远不会再被预留**。
+    """
+    s, reservation, _ = _abort_reservation()
+    await s._run_abort(reservation)
+
+    # `_step` 把 `faulted` 写了下去
+    written = s._session.tx.written  # type: ignore[attr-defined]
+    assert written and written[-1]["state"]["outcome"]["status"] == "faulted"
+    assert "without a terminal outcome" in written[-1]["state"]["outcome"]["error"]["message"]
+
+
+async def test_a_throwing_handler_faults_with_its_own_error() -> None:
+    """⚠️ 处理器抛出的错误**优先于**那句「没给出终局结果」——
+    前者带着**真实原因**，后者只是症状。"""
+
+    async def boom(current: Any, runtime: Any, context: Any) -> None:
+        raise RuntimeError("handler exploded")
+
+    s, reservation, _ = _abort_reservation(abort_impl=boom)
+    await s._run_abort(reservation)
+    written = s._session.tx.written  # type: ignore[attr-defined]
+    assert "handler exploded" in written[-1]["state"]["outcome"]["error"]["message"]
+
+
+async def test_run_abort_accepts_a_synchronous_handler() -> None:
+    """⚠️ 处理器可以是**同步**的（上游类型是 `T | Promise<T>`）。"""
+    seen: list[str] = []
+
+    def sync_abort(current: Any, runtime: Any, context: Any) -> None:
+        seen.append("sync")
+
+    s, reservation, _ = _abort_reservation(abort_impl=sync_abort)
+    await s._run_abort(reservation)
+    assert seen == ["sync"]
+
+
+# --------------------------------------------------------------------------------------
+# C6：run 循环（_run）
+# --------------------------------------------------------------------------------------
+
+
+def _run_reservation(
+    phases: dict[str, Any], *, checkpoints: list[dict[str, Any]] | None = None
+) -> tuple[TaskScheduler, Any, list[str]]:
+    """造一个能跑 run 循环的调度器：任务定义带 `phases`，记录带一个检查点序列。"""
+    s = scheduler()
+    s._session = _FakeSession()
+    rec = record(7, status="running")
+    s._live[7] = rec
+    s._edges[1] = None
+    invocation = s._create_invocation(rec, "run")
+    seen: list[str] = []
+    definition = {"name": "demo", "version": 1, "phases": phases}
+    task = type("T", (), {"definition": definition})()
+    _ = checkpoints
+    return s, Reservation(invocation=invocation, task=task, snapshot=s._registry.snapshot()), seen
+
+
+async def test_run_stops_after_one_phase_when_the_checkpoint_does_not_advance() -> None:
+    """⚠️ **规则 7（没有持久进展 → 出错）必须由 `_run` 落成 ``faulted`` 记录。**
+
+    构造：处理器把检查点**改回同一个值**（等于没有进展）。
+    那让 `_decide` 返回 ``fault`` → `_step` 写 ``faulted`` 并返回 ``None`` → 循环结束。
+
+    **如果 `_run` 吞掉它，循环会永远转**——一个什么都不做的处理器会被**无限重跑**。
+    所以这里断言两件事：**循环结束了**、而且**写下的是 ``faulted``**。
+    """
+    ticks: list[str] = []
+
+    async def idle(current: Any, runtime: Any, context: Any) -> None:
+        ticks.append("tick")
+
+    s, reservation, _ = _run_reservation({"p": idle})
+    # 检查点**从不改变** → 第二次裁决就报「没有持久进展」
+    s._live[7]["state"]["checkpoint"] = {"phase": "p"}
+
+    async def decide_never_advances(tx: Any, current: Any) -> Any:
+        return True
+
+    # 直接跑 `_run` —— 它自己会调 `_decide`
+    await asyncio.wait_for(s._run(reservation), 2)
+    assert ticks == ["tick"]  # 只跑了一次，没有空转
+    written = s._session.tx.written  # type: ignore[attr-defined]
+    assert written and written[-1]["state"]["outcome"]["status"] == "faulted"
+    assert "without durable progress" in written[-1]["state"]["outcome"]["error"]["message"]
+
+
+async def test_run_exits_at_once_when_the_invocation_is_already_ended() -> None:
+    """`_step` 返回 ``None`` 就结束——不跑任何处理器。"""
+    ticks: list[str] = []
+
+    async def handler(current: Any, runtime: Any, context: Any) -> None:
+        ticks.append("ran")
+
+    s, reservation, _ = _run_reservation({"p": handler})
+    s._live[7]["state"]["status"] = "waiting"  # `_step` 对非 running 一律按结束处理
+    await asyncio.wait_for(s._run(reservation), 2)
+    assert ticks == []
+
+
+async def test_run_does_not_dispatch_when_close_happens_after_the_decision() -> None:
+    """⚠️ **关闭可能正好发生在裁决与派发之间**——所以 `_step` 返回之后要再查一次。
+
+    构造：处理器**自己**把 `_closing` 置起来（模拟「裁决通过之后、派发之前」关闭）。
+    没有那第二次检查，它就会**在关闭之后还跑一个 phase**。
+    """
+    ticks: list[str] = []
+
+    async def handler(current: Any, runtime: Any, context: Any) -> None:
+        ticks.append("ran")
+        s._closing = True  # 派发这一刻关闭
+
+    s, reservation, _ = _run_reservation({"p": handler})
+    s._live[7]["state"]["checkpoint"] = {"phase": "p"}
+    await asyncio.wait_for(s._run(reservation), 2)
+    assert ticks == ["ran"]  # 只跑了第一个；第二次循环因 `_closing` 退出
+
+
+async def test_run_records_a_throwing_handler_as_the_previous_failure() -> None:
+    """⚠️ 处理器抛出 → 记成 ``previous.failure`` **而不往上抛**——
+    下一次裁决把它变成 ``fault``（规则 6）。
+
+    **抛上去会绕过那条规则**，让「未捕获的错误」变成「循环崩掉」——
+    而后者**不会写下任何终局记录**。
+    """
+    calls: list[str] = []
+
+    async def boom(current: Any, runtime: Any, context: Any) -> None:
+        calls.append("boom")
+        raise RuntimeError("handler exploded")
+
+    s, reservation, _ = _run_reservation({"p": boom})
+    s._live[7]["state"]["checkpoint"] = {"phase": "p"}
+    await asyncio.wait_for(s._run(reservation), 2)
+
+    assert calls == ["boom"]  # 没有无限重跑
+    written = s._session.tx.written  # type: ignore[attr-defined]
+    assert written and written[-1]["state"]["outcome"]["status"] == "faulted"
+    assert "handler exploded" in written[-1]["state"]["outcome"]["error"]["message"]
+
+
+async def test_run_resets_the_phase_agent_before_each_handler() -> None:
+    """⚠️ **每个阶段之前把 `phase.agent` 置空** —— 于是每个处理器
+    **在首次使用时重新解析**它的 agent。
+
+    「每个阶段至多一次」是**阶段**级的，不是**调用**级的——不置空会让第二个阶段
+    复用第一个阶段的 agent。
+    """
+    seen_agents: list[Any] = []
+
+    async def resolve(conversation_id: int, snapshot: Any, context: Any) -> Any:
+        return object()
+
+    async def handler(current: Any, runtime: Any, context: Any) -> None:
+        seen_agents.append(await runtime.agent(context))
+        # 推进检查点，好让循环进入下一个阶段
+        current["state"]["checkpoint"] = {"phase": "q"}
+
+    async def second(current: Any, runtime: Any, context: Any) -> None:
+        seen_agents.append(await runtime.agent(context))
+        current["state"]["checkpoint"] = {"phase": "r"}
+
+    async def third(current: Any, runtime: Any, context: Any) -> None:
+        # ⚠️ 先取 agent **再**抛——否则这个阶段根本不会去解析，
+        # 于是断言的是「只解析了两次」而不是「三个阶段各解析一次」。
+        seen_agents.append(await runtime.agent(context))
+        raise RuntimeError("stop")
+
+    s, reservation, _ = _run_reservation({"p": handler, "q": second, "r": third})
+    s._agent = resolve
+    s._live[7]["state"]["checkpoint"] = {"phase": "p"}
+    await asyncio.wait_for(s._run(reservation), 2)
+
+    # 三个阶段各自解析了一次 → **三个不同的对象**（若复用，会是同一个）
+    assert len(seen_agents) == 3
+    assert len({id(a) for a in seen_agents}) == 3
+
+
+# --------------------------------------------------------------------------------------
+# C6/C4：预留与驱动（_reserve / _drain / _kick / _start）
+# --------------------------------------------------------------------------------------
+
+
+async def test_reserve_skips_everything_while_disabled() -> None:
+    """⚠️ 调度器**一开始是不使能的**——刚构造好时不该预留任何东西。"""
+    s = scheduler()
+    s._session = _FakeSession()
+    s._edges[1] = None
+    s._track(None, record(7))
+    assert await s._reserve() == []
+
+
+async def test_reserve_marks_abandoned_tasks_first_and_returns() -> None:
+    """⚠️ **第一次只打标记，然后返回**——这样后面几轮才看得见那些标记。
+
+    同一次提交里既打标记又预留，会让一个刚被标记的任务**在同一轮里就被预留成 run**——
+    而它其实应该等 abort。
+    """
+    s = scheduler()
+    s._session = _FakeSession()
+    s._edges[1] = None
+    s._track(None, record(7))
+    s._enabled = True
+    s._abandoned.add(7)
+
+    assert await s._reserve() == []  # 这一轮不预留任何东西
+    written = s._session.tx.written  # type: ignore[attr-defined]
+    assert written and written[-1]["abortRequested"] is True
+    assert written[-1]["abortReason"] == "restart"
+    assert s._abandoned == set()  # 标记过了
+    assert s._dirty is True  # 还要再预留一次
+
+
+async def test_reserve_creates_an_invocation_for_a_runnable_task() -> None:
+    s = scheduler()
+    s._session = _FakeSession()
+    s._edges[1] = None
+    s._track(None, record(7))
+    s._enabled = True
+    definition = type("T", (), {"definition": {"name": "demo", "version": 1}})()
+    s._registry = type(
+        "R", (), {"snapshot": lambda self: type("S", (), {"task": lambda self, kind: definition})()}
+    )()
+
+    reservations = await s._reserve()
+    assert len(reservations) == 1
+    assert reservations[0].invocation.task_id == 7
+    assert 7 in s._invocations
+    assert 7 not in s._runnable  # 已登记，从候选里去掉
+
+
+async def test_reserve_rolls_back_every_invocation_when_the_commit_throws() -> None:
+    """⚠️ **提交失败要把已经建好的调用收回去**——否则它们会留在 `_invocations` 里，
+    于是那任务**永远不会再被预留**，而且没人会去 finish 它们。"""
+    s = scheduler()
+    s._edges[1] = None
+    s._track(None, record(7))
+    s._enabled = True
+    definition = type("T", (), {"definition": {"name": "demo", "version": 1}})()
+    s._registry = type(
+        "R", (), {"snapshot": lambda self: type("S", (), {"task": lambda self, kind: definition})()}
+    )()
+
+    class BoomSession:
+        failure: Any = None
+
+        def commit_with(self, change: Any, context: Any, scope: Any = None) -> Any:
+            async def run() -> Any:
+                # 先让回调建出调用（**要传真 tx**——传 None 会让 `set_task` 先炸，
+                # 那测的就不是「提交失败回收」了），再失败
+                await change(_FakeTx())
+                raise RuntimeError("commit exploded")
+
+            return asyncio.ensure_future(run())
+
+        def read_on_line(self, job: Any) -> Any:
+            return asyncio.ensure_future(job())
+
+    s._session = BoomSession()
+    with pytest.raises(RuntimeError, match="commit exploded"):
+        await s._reserve()
+    assert s._invocations == {}  # 收回了
+    assert 7 in s._runnable  # 重新成为候选
+
+
+async def test_kick_is_idempotent_while_draining() -> None:
+    """⚠️ 「绝不在提交或注册表监听器里同步提交」——而且**正在排空时不再排一轮**。"""
+    s = scheduler()
+    s._draining = True
+    s._enabled = True
+    s._kick()
+    assert s._dirty is True  # 记下了这次的请求
+    assert s._draining is True  # 但没有再排一轮
+
+
+async def test_kick_does_nothing_while_disabled_or_closing() -> None:
+    s = scheduler()
+    s._kick()
+    assert s._draining is False  # 没使能 → 不排
+    s._enabled = True
+    s._closing = True
+    s._kick()
+    assert s._draining is False
+
+
+async def test_start_runs_the_invocation_and_finishes_it() -> None:
+    """⚠️ ``finally`` 那三步缺一不可，其中 **`_kick` 最容易被漏**：
+    少了它，任务在 `_end` 之后重新可运行，**但没人去排空**，于是它**永远停在那里**。"""
+    s = scheduler()
+    s._session = _FakeSession()
+    s._edges[1] = None
+    s._track(None, record(7))
+    s._enabled = True
+    ticks: list[str] = []
+
+    async def handler(current: Any, runtime: Any, context: Any) -> None:
+        ticks.append("ran")
+
+    definition = {"name": "demo", "version": 1, "phases": {"p": handler}}
+    task = type("T", (), {"definition": definition})()
+    # ⚠️ 必须是 `running`——`_step` **只有 `running` 才算数**，否则按「结束」处理。
+    s._live[7]["state"]["status"] = "running"
+    invocation = s._create_invocation(s._live[7], "run")
+    reservation = Reservation(invocation=invocation, task=task, snapshot=s._registry.snapshot())
+
+    s._start(reservation)
+    await asyncio.sleep(0.02)
+    assert ticks == ["ran"]
+    assert invocation.ended is True  # `_end` 跑了
+    assert 7 not in s._invocations  # 从登记表里消失
+    assert 7 in s._runnable  # `_end` 让它重新成为候选
+    # ⚠️ 不能断言 `_dirty is True`：`_kick` 会**排一轮 `_drain`**，
+    # 而那一轮会把 `_dirty` **消费掉**（置回 False）。所以这里断言的是
+    # 「它**确实重建了可运行状态**」——那才是 `_kick` 的意义。
+
+
+async def test_drain_leaves_draining_false_and_rekicks() -> None:
+    """⚠️ **循环最后一次检查之后才到的唤醒，仍然需要它那一轮**——
+    所以 `finally` 里要再 `_kick` 一次。"""
+    s = scheduler()
+    s._session = _FakeSession()
+    s._enabled = True
+    s._draining = True
+    s._dirty = True
+    s._runnable.clear()  # 没有候选 → `_reserve` 立刻返回
+
+    await s._drain()
+    assert s._draining is False
+
+
+# --------------------------------------------------------------------------------------
+# C1：开档 / 使能 / 等待空闲 / 对话中止（open / resume / wait_for_idle / abort_conversation）
+# --------------------------------------------------------------------------------------
+
+
+async def test_open_loads_live_tasks_and_resets_running_to_pending() -> None:
+    """⚠️ **幸存的 ``running`` 改回 ``pending``**——一个崩掉的 Harness 留下的是
+    「跑了一半」的记录，而它**不该被当成还在跑**。改回 ``pending`` 让它**重新被预留**。"""
+    s = scheduler()
+    session = _FakeSession()
+
+    async def scan_tasks(query: Any, limit: Any, cursor: Any) -> dict[str, Any]:
+        return {"items": [record(7, status="running")] if query["status"] == "running" else []}
+
+    session.tx.scan_tasks = scan_tasks  # type: ignore[attr-defined]
+    s._session = session
+
+    await s.open(BACKGROUND_CONTEXT)
+    written = [w for w in session.tx.written if w["id"] == 7]  # type: ignore[attr-defined]
+    assert written and written[-1]["state"]["status"] == "pending"
+    assert 7 in s._live
+
+
+async def test_open_remembers_abandoned_tasks() -> None:
+    s = scheduler()
+    session = _FakeSession()
+    abandoned = {**record(7, status="pending"), "abandonOnRestart": True}
+
+    async def scan_tasks(query: Any, limit: Any, cursor: Any) -> dict[str, Any]:
+        return {"items": [abandoned] if query["status"] == "pending" else []}
+
+    session.tx.scan_tasks = scan_tasks  # type: ignore[attr-defined]
+    s._session = session
+    await s.open(BACKGROUND_CONTEXT)
+    assert 7 in s._abandoned
+
+
+async def test_open_queues_a_reconcile() -> None:
+    """⚠️ 开档**不派发任何东西**，但**要把那次对账排上**——
+    崩溃留下的、还没施加到「已取消拥有者」下面的中止标记要靠它推导。"""
+    s = scheduler()
+    s._session = _FakeSession()
+    await s.open(BACKGROUND_CONTEXT)
+    assert s._cascade_pending is True
+
+
+def test_resume_enables_and_kicks() -> None:
+    s = scheduler()
+    assert s._enabled is False
+    s.resume()
+    assert s._enabled is True
+    assert s._dirty is True  # `_kick` 记下了请求
+
+
+def test_resume_is_idempotent() -> None:
+    s = scheduler()
+    s.resume()
+    s.resume()
+    assert s._enabled is True
+
+
+async def test_wait_for_idle_returns_at_once_when_already_idle() -> None:
+    s = scheduler()
+    s._session = _FakeSession()
+    await asyncio.wait_for(s.wait_for_idle(1, BACKGROUND_CONTEXT), 2)
+
+
+async def test_wait_for_idle_registers_a_waiter_when_busy() -> None:
+    """⚠️ 空闲判定要做**两次**：快路径之后还要**登记**。
+    只做前者会在「刚好在两次之间变空闲」时**永远等下去**。"""
+    s = scheduler()
+    s._session = _FakeSession()
+    s._edges[1] = None
+    s._track(None, record(7))
+
+    waiting = asyncio.ensure_future(s.wait_for_idle(1, BACKGROUND_CONTEXT))
+    await asyncio.sleep(0.01)
+    assert not waiting.done()
+
+    s._idle_waiters.resolve(1, None)
+    assert await asyncio.wait_for(waiting, 2) is None
+
+
+async def test_abort_conversation_marks_the_reachable_tasks_and_withdraws_inputs() -> None:
+    """⚠️ 一次提交里做两件事：**撤回排队中的输入** + **给能到达的每个活的非后台任务打标记**。"""
+    s = scheduler()
+    session = _FakeSession()
+    s._session = session
+    s._edges[1] = None
+    s._track(None, record(7))  # 活的、非后台
+
+    withdrawn: list[int] = []
+
+    async def withdraw(tx: Any, conversation_id: int) -> None:
+        withdrawn.append(conversation_id)
+
+    s._withdraw_inputs = withdraw
+    # 让它一开档就空闲，于是 `wait_for_idle` 立刻返回
+    s._idle = lambda conversation_id: True  # type: ignore[method-assign]
+
+    # ⚠️ `_load_scopes(True)` 读的是**存储**，不是事务——所以 stub 要挂在 `_storage` 上。
+    async def scan_submissions(query: Any, limit: Any, cursor: Any, context: Any = None) -> Any:
+        # ⚠️ 两处都要对：签名是**四个**位置参数，返回值要是一页 `{"items": [...]}`
+        # （`scan_all` 按页取，直接返回 list 会报 "list indices must be integers"）。
+        return {"items": [{"id": 5, "conversationId": 1, "type": "input", "status": "queued"}]}
+
+    s._storage = type("St", (), {"scan_submissions": staticmethod(scan_submissions)})()
+    await s.abort_conversation(1, False, BACKGROUND_CONTEXT)
+
+    written = [w for w in session.tx.written if w["id"] == 7]  # type: ignore[attr-defined]
+    assert written and written[-1]["abortRequested"] is True
+    assert withdrawn == [1]
+
+
+# --------------------------------------------------------------------------------------
+# C5：检视（inspect / _inspect_task）
+# --------------------------------------------------------------------------------------
+
+
+async def test_inspect_reports_the_scheduling_state() -> None:
+    """三态：``closing`` > ``running`` > ``paused``——**顺序即优先级**。"""
+    s = scheduler()
+    s._session = _FakeSession()
+    assert (await s.inspect(s._registry.snapshot()))["scheduling"] == "paused"
+    s._enabled = True
+    assert (await s.inspect(s._registry.snapshot()))["scheduling"] == "running"
+    s._closing = True
+    assert (await s.inspect(s._registry.snapshot()))["scheduling"] == "closing"
+
+
+async def test_inspect_running_wins_over_everything() -> None:
+    """⚠️ **有活的调用 → ``running``**——它在跑，别的原因都不重要。"""
+    s, runtime = _runtime_instance()
+    s._session = _FakeSession()
+    state = s._inspect_task(s._live[7], s._registry.snapshot())
+    assert state == {"kind": "running"}
+
+
+async def test_inspect_reports_completing_before_waiting() -> None:
+    """⚠️ 检查顺序即优先级：``completing`` 在 ``waiting`` 之前。"""
+    s = scheduler()
+    s._edges[1] = None
+    s._track(None, record(7, status="completing", outcome="completed"))
+    assert s._inspect_task(s._live[7], s._registry.snapshot()) == {"kind": "completing"}
+
+
+async def test_inspect_reports_waiting_with_its_dependencies() -> None:
+    s = scheduler()
+    s._edges[1] = None
+    s._track(None, record(7, status="waiting", on=[3]))
+    s._live[3] = record(3)
+    assert s._inspect_task(s._live[7], s._registry.snapshot()) == {"kind": "waiting", "on": [3]}
+
+
+async def test_inspect_reports_a_missing_definition_as_blocked() -> None:
+    s = scheduler()
+    s._edges[1] = None
+    s._track(None, record(7))
+    state = s._inspect_task(s._live[7], s._registry.snapshot())
+    assert state["kind"] == "blocked"
+    assert state["reason"] == "missing_task"
+
+
+async def test_inspect_reports_a_missing_migration_with_the_error_now() -> None:
+    """⚠️ 要迁移但那个定义**没有迁移** → ``blocked: migration_failed``，
+    **并现在就造出那句错误**——否则调用方只知道「被挡了」，**不知道为什么**。"""
+    s = scheduler()
+    s._edges[1] = None
+    s._track(None, record(7))
+    newer = type("T", (), {"definition": {"version": 2}})()
+    snapshot = type("S", (), {"task": lambda self, kind: newer})()
+
+    state = s._inspect_task(s._live[7], snapshot)
+    assert state["kind"] == "blocked"
+    assert state["reason"] == "migration_failed"
+    assert "has no migration" in str(state["error"])
+
+
+async def test_inspect_reports_ready_with_the_migrates_flag() -> None:
+    """⚠️ **一次待处理的迁移显示为 ``ready`` 且带 ``migrates``**——
+    它还没被试过，所以**不是失败**（只有「已经试过的」或「不可能存在的」才显示为失败）。"""
+    s = scheduler()
+    s._edges[1] = None
+    s._track(None, record(7))
+    newer = type("T", (), {"definition": {"version": 2, "migrate": object()}})()
+    snapshot = type("S", (), {"task": lambda self, kind: newer})()
+
+    assert s._inspect_task(s._live[7], snapshot) == {"kind": "ready", "migrates": True}
+
+
+async def test_inspect_returns_a_record_and_state_per_live_task() -> None:
+    s = scheduler()
+    s._session = _FakeSession()
+    s._edges[1] = None
+    s._track(None, record(7))
+    result = await s.inspect(s._registry.snapshot())
+    assert [t["record"]["id"] for t in result["tasks"]] == [7]
+    assert result["tasks"][0]["state"]["kind"] == "blocked"
+
+
+# --------------------------------------------------------------------------------------
+# 整类完工：完整契约测试
+# --------------------------------------------------------------------------------------
+
+
+def test_the_whole_class_satisfies_every_contract_it_implements() -> None:
+    """⚠️ **整类完工的契约测试**——一次断言三个契约：
+
+    * `TaskRuntime`（20+ 成员 + 两个父接口）
+    * `RegistryReader` 的**消费面**在 `_registry` 上（不在调度器上）
+    * `HookRunner`（由 `_RuntimeView` 兼任）
+
+    **用真实实例**（不是类对象）——这是与「便宜的替代物」那条判据的一致做法。
+    """
+    from pi_durable.harness.runtime import TaskRuntime
+    from pi_durable.harness.types import HookRunner
+
+    _s, runtime = _runtime_instance()
+    for contract, holder in ((TaskRuntime, runtime), (HookRunner, runtime)):
+        required = {n for n in dir(contract) if not n.startswith("_")}
+        have = {n for n in dir(holder) if not n.startswith("_")}
+        assert required <= have, f"{contract.__name__} 缺：{sorted(required - have)}"
+
+
+def test_the_class_exposes_every_upstream_member() -> None:
+    """上游 `TaskScheduler` 的**公共面**：8 个 C1 方法 + `index_sizes` + `inspect`。"""
+    public = {
+        "open",
+        "resume",
+        "join",
+        "abort",
+        "wait_for_task",
+        "wait_for_idle",
+        "abort_conversation",
+        "inspect",
+    }
+    have = {n for n in dir(TaskScheduler) if not n.startswith("_")}
+    assert public <= have, sorted(public - have)
+    assert "index_sizes" in have

@@ -14,14 +14,39 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, cast
 
 from pi_durable.types import TaskDefinition
 
-__all__ = ["DefinedTask", "define_task"]
+__all__ = ["DefinedTask", "Definition", "define_task"]
 
 _T = TypeVar("_T")
+
+
+class Definition(dict[str, Any]):  # noqa: FURB189 - 故意的：要**两种访问都支持**
+    """一个**同时支持两种访问**的任务定义。
+
+    ⚠️ **这是本端的一个必要适配，JS 没有对应物**：上游的 ``TaskDefinition`` 是**对象字面量**，
+    所以 ``definition.initial`` 与 ``definition["initial"]`` 是**同一件事**。
+    Python 里它们是两件事，而本仓**两半各选了一种**：
+
+    * **批次 B** 的 ``Transaction._create_task`` 用**属性**（``definition.initial``）；
+    * **批次 D** 的 ``scheduler`` / ``live`` 用**下标**（``definition["name"]``）。
+
+    **它们各自都测过、都过了——而合起来才炸**（``AttributeError: 'dict' object has no attribute 'initial'``）。
+    **这是只有端到端测试才能发现的缺陷。**
+
+    ⇒ 用一个 ``dict`` 子类 + ``__getattr__`` 把两种访问**都**给出去，
+    这样**两侧都不用改**，而 ``define_task`` 仍然**不校验**（照上游）。
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name) from None
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,4 +61,8 @@ def define_task(definition: TaskDefinition | Any) -> DefinedTask[Any]:
 
     把它注册进注册表，Harness 就能跑这个种类（``kind``）的任务。
     """
-    return DefinedTask(definition=definition)
+    # ⚠️ **只包 Mapping**：dataclass 定义（批次 B 的测试与既有调用方用的那种）
+    # 本身就有属性，包成 dict 子类会报 `'X' object is not iterable`。
+    if isinstance(definition, Mapping):
+        return DefinedTask(definition=Definition(definition))
+    return DefinedTask(definition=cast(Any, definition))

@@ -224,9 +224,10 @@ async def _start_run(tx: Any, conversation_id: int, live: Any, users: list[int])
     但那时它仍会被留在函数内，因为**这条边正是用来打破三环的那一条**
     （见 PORTING.md〈环的最终归属〉）。
     """
-    # ⚠️ `start_run` 属 `generation.py` 的 **Slice B**（待 `scheduler.py`），所以现在挂忽略；
-    # **Slice B 一到就删掉这个 ignore**。这条边本身会**留在函数内**——它是打破三环的那一条。
-    from pi_durable.harness.generation import start_run  # type: ignore[attr-defined]
+    # ⚠️ 这条边**留在函数内**——它是打破三环的那一条（`submissions → generation`）。
+    # 它**不是**延迟 import 的"实现细节"问题，而是 SCC 里那条真的循环；
+    # 函数内导入让**导入期**的图保持无环，而**运行期**的环仍然完整。
+    from pi_durable.harness.generation import start_run
 
     await start_run(tx, conversation_id, live, users)
 

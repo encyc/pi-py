@@ -205,16 +205,49 @@ async def test_join_is_not_a_noop_when_a_done_future_is_missing() -> None:
 # --------------------------------------------------------------------------------------
 
 
+#: 尚未落地的 C1 方法。⚠️ **落地一个就从这里删一个**——
+#: 这条断言**会主动失败**，那就是提醒（〈临时性事实应当写成会过期的断言〉）。
+#: ⚠️ **整类已完工**（63 个方法全部落地）——所以这份名单是空的。
+#: 它留着是为了**下一个人**：若将来某个方法被移除，把名字加回来，这条测试就会报警。
+UNIMPLEMENTED_C1: tuple[str, ...] = ()
+
+#: 已经落地的 C1 方法——它们**必须真的在类上**且是协程。
+IMPLEMENTED_C1_COROUTINES = (
+    "join",
+    "abort",
+    "wait_for_task",
+    "open",
+    "abort_conversation",
+)
+
+
 def test_unimplemented_methods_do_not_exist_yet() -> None:
     """⚠️ 本轮的交付单位是**整类**，但只落地了一部分。
 
-    按准则：**未做的方法根本不存在**（不留桩——不存在优于存在但抛）。
-    所以这里断言「还不存在」，等它们落地时**这条测试会失败**，
-    提醒把它改成「存在且可用」。
+    按准则：**未做的方法根本不存在**（不留桩——不存在优于存在抛）。
+    所以这里断言「还不存在」；**等它们落地时这条测试会失败**，
+    提醒把名字挪到 ``IMPLEMENTED_C1_COROUTINES``。
+
+    ⚠️ **这条测试按设计触发过一次**：我实现 ``abort`` 之后它立刻报
+    ``abort 尚未落地，不该存在``（全包跑时才暴露）——**正是它该做的事**。
+
+    ⚠️ **现在 ``UNIMPLEMENTED_C1`` 是空的**——因为整类已完工。它留着是为了下一个人：
+    若将来某个方法被移除，把名字加回来，这条测试就会**再次报警**。
     """
-    for name in ("open", "resume", "abort", "wait_for_task", "wait_for_idle", "abort_conversation"):
+    for name in UNIMPLEMENTED_C1:
         assert not hasattr(TaskScheduler, name), f"{name} 尚未落地，不该存在"
 
-    # 已落地的那些**都是真的**
-    assert inspect.iscoroutinefunction(TaskScheduler.join)
+    # 已落地的那些**都是真的**（从使用侧验证：`hasattr` + 是不是协程）
+    for name in IMPLEMENTED_C1_COROUTINES:
+        assert hasattr(TaskScheduler, name), f"{name} 应该已经落地"
+        assert inspect.iscoroutinefunction(getattr(TaskScheduler, name)), name
+    # ⚠️ `resume` / `wait_for_idle` **不是协程**（上游就是同步的）——单独断言。
+    for name in ("resume", "wait_for_idle"):
+        assert hasattr(TaskScheduler, name), f"{name} 应该已经落地"
+        assert not inspect.iscoroutinefunction(getattr(TaskScheduler, name)), name
+    # ⚠️ **整类完工的判据**：检视面也在。
+    for name in ("inspect", "_inspect_task"):
+        assert hasattr(TaskScheduler, name), f"{name} 应该已经落地"
+    assert inspect.iscoroutinefunction(TaskScheduler.inspect)
+    assert not inspect.iscoroutinefunction(TaskScheduler._inspect_task)  # 同步派生
     assert TaskScheduler.__init__ is not object.__init__

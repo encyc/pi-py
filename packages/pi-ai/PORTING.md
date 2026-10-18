@@ -48,6 +48,7 @@
 | 各厂 TS SDK | 各厂 Python SDK（openai / anthropic） | 语言对等 |
 | `parseStreamingJson`（partial-json 库） | 严格解析 → **窄转义修复** → `json-repair` 结构补全（仅流式路径） | Python 生态等价容错 JSON 解析；**收尾路径已改为上游窄修复语义**，见偏离 ② |
 | EventStream（手写队列） | EventStream（asyncio.Queue） | 移植自旧版优秀设计；`asyncio.Queue` 天然无上游 #9055 的二次复杂度 |
+| `lazyStream` 取时刻**先于**建流（`api/lazy.ts:50-51`） | 先建流、再取时刻 | 上游顺序有 **1ms 竞态**（毫秒刻度落在两次读钟之间时，setup 失败消息的 `duration_ms` 静默缺失）。详见「`lazy_stream` 的 1ms 竞态」小节 |
 | 模型清单 `models.generated.ts` | 精简硬编码（gpt-4o 系列） | 后续按需扩充或数据化 |
 | `JsonValue` 递归类型 | `JsonValue: TypeAlias = Any`；`JsonObject = dict[str, Any]` | Pydantic v2 对**隐式递归别名**会 `RecursionError`（曾导致全包无法 import，见「v1.3.0 类型族批次」）。`ToolCall.arguments` 亦沿用同一退化，保持一致 |
 | `BaseModel`（模型字段基类） | **不导出**，仅内部私有 `_ModelShapeBase` | 会与 `pydantic.BaseModel` 冲突；下游未请求该符号 |
@@ -80,6 +81,19 @@
   `max_retries=0`，重试是外层关注点（待实现 retry 工具）。
 - **pydantic-mypy 插件**：对 `Annotated[Union, Field(discriminator=...)]` 判别联合的
   字段类型解析有偏差，AssistantMessage.content 迭代处用 `__dict__` 直取绕过。
+
+## 测试准则
+
+**通用准则见仓库根 [`CONTRIBUTING.md`](../../CONTRIBUTING.md) 的「测试准则」**
+（`### 新增测试必须自证「判别力」`、`### 修「静默失效」类 bug 时，判据不能是返回值`）。
+
+本节原内容**已提升到那里**，此处只留指针——**同一个准则只留一个版本**：两份会漂移，
+而本项目已经为"两处实现各自漂移"付过代价（`output_files.py` 提取、`_deadline_seconds`
+复用、`jsonEqual` 不造第二份，都是同一条理由）。
+
+pi-ai 特有的**实例**仍留在本文件，见「`lazy_stream` 的 1ms 竞态」小节：
+受控假件（每次读钟前进 1ms）把 0.1% 的竞态变必现、用例自证、以及防"照上游对齐换回去"
+的静态顺序断言。
 
 ## v1.3.0 同步说明
 
@@ -218,6 +232,69 @@ OAuth / 动态目录）不在本轮范围。
   防止有人"顺手改回递归"再次炸掉全包
 - **教训**：在共享包内做类型别名迭代时，必须**每步立即 import 自检**；
   本次是编辑后同一步内自检发现并修掉的，但对下游造成约 7 分钟不可用
+
+## `lazy_stream` 的 1ms 竞态（**有意偏离上游**）
+
+### 上游的实现与缺陷
+
+```ts
+// packages/ai/src/api/lazy.ts:50-51
+const startedAt = Date.now();                       // ← 先取时刻
+const outer = new AssistantMessageEventStream();    // ← 建流时内部又取一次时刻
+```
+
+`AssistantMessageEventStream` 会用**建流那一刻**作为 `durationMs` 的零点，并且对
+「时间戳早于流创建时刻」的消息**跳过计时**（`utils/event-stream.ts:122-127` 的守卫，
+本意是为"别处早已开始、稍后才取回"的延迟响应不计时）。
+
+于是上游存在一个 **1ms 竞态**：若毫秒刻度恰好落在两次读钟之间，`startedAt` 会比流内部
+的起点小 1，setup 失败消息因此**不被计入 `durationMs`**——特性静默失效，无任何报错。
+命中率约 **0.1%/次**，单文件跑几乎不出现、全仓跑偶发（本端即以 flaky 形式暴露）。
+
+### 本端的修复（选择 **B**：改顺序，不保留窗口）
+
+```python
+# packages/pi-ai/src/pi_ai/lazy.py
+outer = AssistantMessageEventStream()      # 先建流
+started_at = int(time.time() * 1000)       # 再取时刻
+```
+
+**理由**（沿用本项目已确立的准则）：
+
+1. **能消灭的窗口不该留在文档里**——这是一行重排的事，没有理由把它写成一条已知缺陷。
+2. **「意图明确但偶尔不成立」比「明确的错误」更难排查**——`lazy.py` 与
+   `event_stream.py` 两处文档都写明"取请求开始时刻**这样才会**计入 `duration_ms`"，
+   而竞态让这句话 ~0.1% 的时候不成立。留着它等于把文档变成"多数情况下成立"的说法。
+3. 语义代价仅为「时间戳晚几微秒～1ms」，而 `durationMs` 是毫秒级耗时指标，无实质影响。
+
+**未选 A（忠实保留上游竞态 + 测试容忍）**：代价是一个"偶尔不生效"的特性被永久保留，
+且测试再也无法证明该特性有效——与本轮一路在抓的「静默失效」同类。
+
+### 回归守卫（把 0.1% 的竞态变成确定性断言）
+
+`tests/test_lazy_stream.py`：
+
+- `test_setup_error_duration_survives_the_1ms_tick_boundary`
+  ——用**每次读钟前进 1ms** 的假时钟（`_TickingClock`），使旧顺序**必然**满足
+  `message.timestamp < stream._started_at_ms`。该用例**自带判别性证明**：同一假时钟下
+  按旧顺序构造的消息确实 `duration_ms is None`，故它不是恒真的空断言。
+- `test_lazy_stream_uses_the_stream_start_not_a_pre_stream_clock_read`
+  ——静态断言源码里"建流"在"取时刻"之前，防止有人**照上游对齐**把两行换回去而让竞态复活
+  （这个反例是真实存在的：本端其余地方的原则恰恰是"逐字对齐上游"）。
+
+**已验证判别力**：把 `lazy.py` 临时改回上游顺序后，上述两条用例**均失败**；
+恢复修复后 14/14 通过。
+
+**顺带一条对比证据**：原有的 real-clock 用例
+（`test_lazy_stream_error_message_timestamp_is_request_start`）在改回上游顺序后
+**仍然通过**——**它正是那个 0.1% 的 flaky**。这同时说明两件事：新用例**不是重复**，
+且「0.1% 的 flaky」与「100% 的确定性用例」在守护能力上**差三个数量级**。
+（通用准则见 [`CONTRIBUTING.md`](../../CONTRIBUTING.md) 的「测试准则」。）
+
+> **残留（已评估，暂不处理）**：`time.time()` 是**墙钟**，若恰在两次读钟之间发生
+> NTP 回拨 ≥1ms，理论上仍可能命中。该概率远低于本次修掉的刻度边界（且需系统级时钟
+> 调整），本端不为此再引入 API。如需结构上绝对，可让 `lazy_stream` 直接取流自身的
+> 起点（需给 `AssistantMessageEventStream` 加只读属性）——当前判断为不必要。
 
 ## `Models` 类型面说明（**类型专用切分**）
 

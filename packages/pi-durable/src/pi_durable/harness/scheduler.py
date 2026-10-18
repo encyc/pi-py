@@ -28,13 +28,21 @@ import contextlib
 import dataclasses
 import inspect
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
-from pi_chord.context import AbortController, AbortSignal, with_abort_signal
+from pi_chord.context import (
+    AbortController,
+    AbortSignal,
+    await_with_context,
+    with_abort_signal,
+)
 from pi_chord.json import copy_json, json_equal
+from pi_durable.errors import error_message
+from pi_durable.harness.agent import agent_hooks
+from pi_durable.harness.runtime import UNSET
 from pi_durable.harness.util import Waiters, closed_error, scan_all
 from pi_durable.session.session import SessionImpl
-from pi_durable.session.transaction import Transaction
+from pi_durable.session.transaction import Transaction, TransactionScope
 from pi_durable.types import TaskOutcome
 
 __all__ = [
@@ -1585,7 +1593,12 @@ class TaskScheduler:
         return self._session.commit_with(
             on_line,
             context,
-            {"conversationId": invocation.conversation_id, "taskId": invocation.task_id},
+            # ⚠️ 必须是 `TransactionScope` **对象**，不是 dict——
+            # `Transaction` 用 `scope.task_id` 属性读它，传 dict 会报
+            # `'dict' object has no attribute 'task_id'`（只有端到端才跑到这里）。
+            TransactionScope(
+                conversation_id=invocation.conversation_id, task_id=invocation.task_id
+            ),
         )
 
     async def _commit_state(
@@ -1719,6 +1732,1141 @@ class TaskScheduler:
                 reach(step["id"], id)
             walked.update(found)
         return None
+
+    # ─── C1：公共 API 的中止与等待（``scheduler.ts:141-197, 1438-1452``）─────────────
+
+    async def _terminate(self, tx: Any, record: dict[str, Any], outcome: dict[str, Any]) -> None:
+        """写下**调度器自己**的终局结果（``scheduler.ts:1438-1451``）。
+
+        ⚠️ **与 `_commit_state` 同一条规则**：下面还有活的普通拥有工作 → 写 ``completing``、
+        **结果先 held 住**；只有真的没活了才写 ``terminal``，
+        **并在同一次提交里做 Harness 清理**（``_settle_outcome``）。
+
+        ⚠️ 判之前要 `_load_scopes(False)`——**数据没到齐就判，会把有子任务的父误判成终局**。
+        """
+        await self._load_scopes(False)
+        if self._has_owned_live(record["id"], overlay_of(tx)):
+            tx.set_task(with_state(record, {"status": "completing", "outcome": outcome}))
+            return
+        tx.set_task(with_state(record, {"status": "terminal", "outcome": outcome}))
+        await self._settle_outcome(tx, record, outcome)
+
+    async def abort(self, id: int, context: Any, keep_restart: bool = False) -> str:
+        """中止一个任务（``scheduler.ts:141-169``）：提交中止标记，
+        或者把一个**没有任何已注册定义能接下**的任务结算成 ``orphaned``。
+
+        然后 **join 线上看到的那次运行调用**——提交监听器已经给它发过信号了。
+
+        ⚠️ 三处细节，每处都有理由：
+
+        * **``keep_restart``**：一个「重启后等待定义」的任务**保留它的标记**并继续等——
+          拥有者自己的清理会用到这条；
+        * **已 ``completing``** 的任务**只打标记**：它已经在收尾了，不能再跑中止处理器；
+        * **不带 ``abortReason`` 的请求会替换 ``restart`` 标记**——否则一个卡在
+          「等定义」上的任务**永远等不到中止**（它会一直以为自己是「重启抛弃」的）。
+        """
+        result: dict[str, Any] = {}
+
+        async def change(tx: Any) -> None:
+            current = await tx.task(id)
+            if current is None:
+                raise RuntimeError(f"Task {id} does not exist")
+            if current["state"]["status"] == "terminal":
+                result["result"] = "terminal"
+                return
+            invocation = self._invocations.get(id)
+            # ⚠️ 带 restart 标记的任务**没有 run 调用**——它只等中止。
+            if keep_restart and current.get("abortReason") == "restart":
+                result["result"] = "marked"
+                return
+            if invocation is None and current["state"]["status"] != "completing":
+                await self._load_scopes(False)
+                if not self._has_owned_live(id):
+                    resolution = self._resolve(current, self._registry.snapshot())
+                    if resolution["kind"] == "blocked":
+                        await self._terminate(
+                            tx, current, {"status": "orphaned", "reason": resolution["reason"]}
+                        )
+                        result["result"] = "marked"
+                        return
+            if not current.get("abortRequested") or current.get("abortReason") is not None:
+                tx.set_task(with_abort_mark(current))
+            result["result"] = "marked"
+            if invocation is not None and invocation.mode == "run":
+                result["run"] = invocation
+
+        await self._session.commit_with(change, context)
+        run = result.get("run")
+        # ⚠️ 提交监听器已经给它发过信号了，这里 **join 它**。
+        # 一个**忽略自己信号**的运行可能活过一次**失败的 Session**——
+        # 那种情况下 `failed` 会结束这次等待（否则我们会在这里**永远等下去**）。
+        if run is not None and run.done is not None:
+            waiters: list[Any] = [run.done]
+            failed = getattr(self._session, "failed", None)
+            if failed is not None and hasattr(failed, "__await__"):
+                waiters.append(failed)
+            await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+        return str(result["result"])
+
+    async def wait_for_task(self, id: int, context: Any) -> Any:
+        """等一个任务**终局**（``scheduler.ts:170-185``）。
+
+        ⚠️ **查与登记在同一条会话线上完成**：否则一次终局发布可能正好落在两者之间，
+        于是这个等待**永远不会被唤醒**（与 `Submissions.wait()` 同一条判据）。
+        """
+        if self._closing:
+            raise closed_error(self._session)
+
+        async def job() -> Any:
+            if self._closing:
+                raise closed_error(self._session)
+            if id in self._live:
+                return {"waiter": self._task_waiters.add(id, context)}
+            record = await self._storage.task(id, context)
+            if record is None:
+                raise RuntimeError(f"Task {id} does not exist")
+            return {"settled": record}
+
+        found = await self._session.read_on_line(job)
+        if "settled" in found:
+            return found["settled"]
+        return await found["waiter"]
+
+    def _runtime(self, invocation: Invocation, phase: Phase) -> _RuntimeView:
+        """建一个调用的 ``TaskRuntime`` 视图（``scheduler.ts:1590``）。
+
+        ⚠️ 它是**门面**：20+ 个成员逐个接到调度器的内部状态上。
+        ``phase`` 带着这一阶段的快照与任务，以及那个**懒解析**的 agent 槽位——
+        所以同一个 phase 里的多次 ``agent()`` 复用同一次解析。
+
+        ⚠️ 视图**不持有**调度器的副本，它持有**引用**：
+        调用结束时视图上的一切都会拒绝（``invocation.ended``），
+        但**看得到**调度器最新的状态（``_live`` 等）——这正是它要的。
+        """
+        return _RuntimeView(self, invocation, phase)
+
+    # ─── 阶段裁决（``scheduler.ts:1344-1437``）──────────────────────────────────────
+
+    def _decide(
+        self,
+        tx: Any,
+        current: dict[str, Any],
+        previous: PhaseResult | None,
+        state: dict[str, Any],
+    ) -> Any:
+        """一次 **run** 调用的**优先级裁决**（在会话线上）（``scheduler.ts:1344-1385``）。
+
+        规则 1（终局 / ``completing`` / ``waiting``）与规则 2（正在关闭）由 :meth:`_step` 施加。
+        这里施加 3~6，**顺序即优先级**：
+
+        3. **中止标记** → 结束；任务下面的普通拥有工作消失之后，会**新起一次 abort 调用**；
+        4. **拥有者的取消意图** → 也结束它，**并且在它的级联标记之前**；预留随后会把它按回去；
+        5. 第一次（``previous is None``）→ 继续；
+        6. **未捕获的错误** → 出错；
+        7. **没有持久进展**（检查点没变）→ 出错；
+        8. 有进展 → 刷新快照；**定义换了**就交接或报告。
+
+        ⚠️ 返回 ``True`` 表示「继续下一个 phase」，``False`` 表示「结束调用，不写终局」，
+        ``{"fault": error}`` 表示「结束并写 ``faulted``」。
+        """
+        # 3. 中止标记
+        if current.get("abortRequested"):
+            return False
+        # 拥有者的取消意图也结束它——**在它的级联标记之前**；预留随后会把它按回去。
+        if not current["background"] and self._below_cancelled(parent_of(current)):
+            self._cascade_pending = True
+            self._schedule_reconcile()
+            return False
+        if previous is None:
+            return True
+        # 4. 未捕获的错误。
+        if previous.get("failure") is not None:
+            return {"fault": previous["failure"]["error"]}
+        # 6. 没有持久进展。
+        if json_equal(current["state"].get("checkpoint"), previous["checkpoint"]):
+            message = (
+                f"Task {current['kind']} phase {previous['checkpoint']['phase']} "
+                "returned without durable progress"
+            )
+            return {"fault": RuntimeError(message)}
+        # 5. 有进展：刷新快照；交接给一个能接下的替换定义。
+        state["snapshot"] = self._registry.snapshot()
+        next_task = state["snapshot"].task(current["kind"])
+        if next_task is not state["task"]:
+            if next_task is not None and can_reserve(next_task, current):
+                tx.set_task(
+                    with_state(
+                        current, {"status": "pending", "checkpoint": current["state"]["checkpoint"]}
+                    )
+                )
+                return False
+            if state.get("reported") is None or state["reported"]["task"] is not next_task:
+                state["reported"] = {"task": next_task}
+                cause = "missing_task" if next_task is None else "incompatible_task"
+                # ⚠️ 上游把 `cause` 作为 `Error` 的选项带上（`{ cause }`）；
+                # Python 的对应物是**异常原因链**——所以这里显式挂上去，
+                # 而不是塞进消息文本（那样调用方就没法程序化地读它了）。
+                problem = RuntimeError(
+                    f"Task {current['id']} keeps running under its old {current['kind']} definition"
+                )
+                problem.__cause__ = RuntimeError(cause)
+                self._report(problem)
+        return True
+
+    async def _step(self, invocation: Invocation, decide: Any) -> Any:
+        """一次「先裁决、再决定」的线上步骤（``scheduler.ts:1408-1437``）。
+
+        它在**一次提交里**做四件事：
+
+        1. 取当前记录——**只有 ``running`` 才算数**，别的一律按「结束」处理；
+        2. 调 ``decide``（**正在关闭时不调**——那时不该再跑任何任务代码）；
+        3. ``decide`` 返回真 → 把当前记录交回去，任务继续；
+        4. 否则 **结束调用**；返回了 ``fault`` 就写 ``faulted``。
+
+        ⚠️ ``except`` 那半是**必须的**：这一步写的是**调度器自己的决定**
+        （一个出错、或者一条终局记录）。**如果那里抛出而没人接住，任务会留在 ``running``**——
+        于是它会被**再次预留、再次运行**，而它上一次的状态已经被写过一半了。
+        所以这里**结束调用并弄失败 Session**，而不是把异常漏出去。
+        """
+        try:
+
+            async def on_line(tx: Any) -> Any:
+                found = self._live.get(invocation.task_id)
+                current = (
+                    found if found is not None and found["state"]["status"] == "running" else None
+                )
+                decision = (
+                    decide(tx, current) if current is not None and not self._closing else False
+                )
+                if decision is True:
+                    return current
+                self._end(invocation)
+                if decision is not False:
+                    error = decision["fault"]
+                    # ⚠️ `current` 在这个分支里**一定非空**：`decide` 只在它非空时才被调，
+                    # 而走到这里就说明 `decide` 返回过（上游用的是 `current!`）。
+                    await self._terminate(
+                        tx,
+                        cast("dict[str, Any]", current),
+                        {"status": "faulted", "error": {"message": error_message(error)}},
+                    )
+                return None
+
+            return await self._session.commit_with(on_line, self._context)
+        except BaseException as error:  # noqa: BLE001 - 上游同样捕获一切
+            self._end(invocation)
+            self._fail_session(error)
+            return None
+
+    async def _run_abort(self, reservation: Reservation) -> None:
+        """跑一次**中止处理器**（``scheduler.ts:1386-1407``）。
+
+        ⚠️ **它只跑一次**——与 :meth:`_run` 的循环不同，中止处理器没有阶段可推进。
+
+        ⚠️ 规则 1、2、4 适用：**返回而没给出终局结果 = 出错**。
+        所以 ``await self._step(...)`` 传的那个 ``decide`` **永远返回一个 fault**
+        （要么是处理器自己抛的错，要么是「它没给出终局结果」）——
+        **这就是「中止处理器不能什么都不做」的强制点**。
+
+        ⚠️ 处理器抛出的错误**优先于**那句「没给出终局结果」：
+        前者带着真实原因，后者只是症状。
+        """
+        invocation = reservation.invocation
+        current = self._live.get(invocation.task_id)
+        # ⚠️ 已经终局、或者正在关闭 → **什么都不做**：
+        # 那时既不该跑任务代码，也没有状态可写。
+        if current is None or current["state"]["status"] != "running" or self._closing:
+            return
+        failure: dict[str, Any] | None = None
+        phase = Phase(snapshot=lambda: reservation.snapshot, task=lambda: reservation.task)
+        runtime = self._runtime(invocation, phase)
+        abort = (
+            erased(reservation.task).get("abort")
+            if isinstance(erased(reservation.task), dict)
+            else None
+        )
+        try:
+            if abort is None:
+                abort = erased(reservation.task).abort
+            result = abort(current, runtime, invocation.context)
+            if inspect.isawaitable(result):
+                await result
+        except BaseException as error:  # noqa: BLE001 - 上游同样捕获一切
+            failure = {"error": error}
+
+        message = f"Abort handler of task {invocation.task_id} returned without a terminal outcome"
+
+        def decide(tx: Any, _current: Any) -> Any:
+            return {"fault": failure["error"] if failure is not None else RuntimeError(message)}
+
+        await self._step(invocation, decide)
+
+    async def _run(self, reservation: Reservation) -> None:
+        """跑阶段处理器，**每个之前都有一步裁决**（``scheduler.ts:1318-1343``）。
+
+        这个循环的形状本身就是语义：
+
+        1. ``state`` 是**可变的**（``task``/``snapshot``/``reported``）——
+           它与 :meth:`_decide` **共享**，因为裁决会在「有进展」时**刷新快照**、
+           在「定义换了」时**记下已报告的那个**；
+        2. ``_step`` 在线上裁决，返回 ``None`` 就**结束**；
+        3. ⚠️ **返回之后还要再查一次 ``_closing``** —— 关闭可能**正好发生在裁决与派发之间**
+           （裁决通过了、但 Harness 已经开始关闭）；
+        4. ⚠️ **每个阶段之前把 ``phase.agent`` 置空** —— 于是每个处理器
+           **在首次使用时重新解析**它的 agent（「每个阶段至多一次」是**阶段**级的，
+           不是调用级的）；
+        5. 处理器抛出 → **记成 ``previous.failure`` 而不往上抛**——
+           下一次裁决把它变成 ``fault``（规则 6）。**抛上去会绕过那条规则**，
+           让「未捕获的错误」变成「循环崩掉」。
+
+        ⚠️ **规则 7（没有持久进展 → 出错）由 `_step` 落成 ``faulted`` 记录**，
+        所以它**不会**被这里吞掉：``_step`` 返回 ``None``，循环就结束。
+        **吞掉它会让循环永远转**（一个什么都不做的处理器会被无限重跑）。
+        """
+        invocation = reservation.invocation
+        state: dict[str, Any] = {
+            "task": reservation.task,
+            "snapshot": reservation.snapshot,
+            "reported": None,
+        }
+        phase = Phase(
+            snapshot=lambda: state["snapshot"],
+            task=lambda: state["task"],
+        )
+        runtime = self._runtime(invocation, phase)
+        previous: PhaseResult | None = None
+        while True:
+
+            def decide(tx: Any, current: Any, _previous: Any = previous) -> Any:
+                return self._decide(tx, current, _previous, state)
+
+            current = await self._step(invocation, decide)
+            # ⚠️ 关闭可能**正好发生在裁决与派发之间**。
+            if current is None or self._closing:
+                return
+            checkpoint = current["state"]["checkpoint"]
+            # ⚠️ **每个处理器在首次使用时重新解析它的 agent**。
+            phase.agent = None
+            definition = erased(state["task"])
+            phases = definition["phases"] if isinstance(definition, dict) else definition.phases
+            handler = phases[checkpoint["phase"]]
+            try:
+                result = handler(current, runtime, invocation.context)
+                if inspect.isawaitable(result):
+                    await result
+                previous = {"checkpoint": checkpoint}
+            except BaseException as error:  # noqa: BLE001 - 上游同样捕获一切
+                previous = {"checkpoint": checkpoint, "failure": {"error": error}}
+
+    # ─── 预留与驱动（``scheduler.ts:1094-1200, 1301-1317``）──────────────────────────
+
+    async def _reserve(self) -> list[Reservation]:
+        """在**一次提交里**预留每一个够格的任务（``scheduler.ts:1122-1200``）。
+
+        ⚠️ **第一次（开档后）只给「被抛弃的任务」打中止标记，然后返回**——
+        这样**后面几轮才看得见那些标记**。同一次提交里既打标记又预留，
+        会让一个刚被标记的任务**在同一轮里就被预留成 run 模式**——
+        而它其实应该等 abort。
+        """
+        reservations: list[Reservation] = []
+        abandoned: list[int] = []
+        try:
+
+            async def on_line(tx: Any) -> None:
+                if not self._enabled or self._closing:
+                    return
+                for id in list(self._abandoned):
+                    record = self._live.get(id)
+                    if record is not None and not record.get("abortRequested"):
+                        tx.set_task(with_abort_mark(record, "restart"))
+                if self._abandoned:
+                    abandoned.extend(self._abandoned)
+                    return
+                await self._load_scopes(False)
+                snapshot: Any = None  # 每轮只取一次，且只在真有候选时取
+                for id in list(self._runnable):
+                    record = self._live.get(id)
+                    if (
+                        record is None
+                        or record["state"]["status"] == "completing"
+                        or id in self._invocations
+                    ):
+                        self._runnable.discard(id)
+                        continue
+                    # ⚠️ 它要等的东西一结束（或它的记录变了、它下面的活结束了）就会回来。
+                    if self._waiting_on(record, True):
+                        self._runnable.discard(id)
+                        continue
+                    mode = "abort" if record.get("abortRequested") else "run"
+                    # 有取消意图的拥有者下面的活**等它的级联标记**，而不是跑一个阶段；
+                    # 把级联排上（它可能还没跑过）。
+                    if (
+                        mode == "run"
+                        and not record["background"]
+                        and self._below_cancelled(parent_of(record))
+                    ):
+                        self._cascade_pending = True
+                        self._schedule_reconcile()
+                        continue
+                    if snapshot is None:
+                        snapshot = self._registry.snapshot()
+                    resolution = self._resolve(record, snapshot)
+                    if resolution["kind"] == "blocked":
+                        # 一个**被抛弃**的任务在等它的定义，好让它的中止处理器能清理。
+                        if mode == "abort" and record.get("abortReason") is None:
+                            await self._terminate(
+                                tx, record, {"status": "orphaned", "reason": resolution["reason"]}
+                            )
+                        continue
+                    if resolution["record"] is not record or record["state"]["status"] != "running":
+                        tx.set_task(
+                            with_state(
+                                resolution["record"],
+                                {
+                                    "status": "running",
+                                    "checkpoint": resolution["record"]["state"]["checkpoint"],
+                                },
+                            )
+                        )
+                    # ⚠️ **在线上登记**，好让标记与后来的预留看得见它、关闭也能 join 它；
+                    # `_end` 会让它**重新成为候选**。
+                    self._runnable.discard(id)
+                    invocation = self._create_invocation(record, mode)
+                    reservations.append(
+                        Reservation(
+                            invocation=invocation, task=resolution["task"], snapshot=snapshot
+                        )
+                    )
+
+            await self._session.commit_with(on_line, self._context)
+        except BaseException:
+            # ⚠️ **提交失败要把已经建好的调用收回去**——否则它们会留在
+            # `_invocations` 里（于是那任务**永远不会再被预留**），而且没人会去 finish 它们。
+            for reservation in reservations:
+                self._invocations.pop(reservation.invocation.task_id, None)
+                self._runnable.add(reservation.invocation.task_id)
+                if reservation.invocation.finish is not None:
+                    reservation.invocation.finish()
+            raise
+        # 标记过了、或者本来就有标记/已经没了：它们的事完了。**再预留一次，这次看得见标记。**
+        for id in abandoned:
+            self._abandoned.discard(id)
+        if abandoned:
+            self._dirty = True
+        return reservations
+
+    async def _drain(self) -> None:
+        """把可运行的任务跑到「没有更多可预留的」为止（``scheduler.ts:1102-1121``）。"""
+        try:
+            while self._dirty and self._enabled and not self._closing:
+                self._dirty = False
+                for reservation in await self._reserve():
+                    self._start(reservation)
+        except BaseException as error:  # noqa: BLE001 - 与 `_reconcile` 同理
+            # 预留那次提交里**不跑任何扩展代码**——所以抛出的只能是存储故障、宿主回调、或者 bug。
+            self._fail_session(error)
+        finally:
+            self._draining = False
+            # ⚠️ **循环最后一次检查之后才到的唤醒，仍然需要它那一轮**。
+            if self._dirty:
+                self._kick()
+
+    def _kick(self) -> None:
+        """请求一轮排空（``scheduler.ts:1094-1100``）。
+
+        ⚠️ **绝不在提交或注册表监听器里同步提交**——所以这里用 ``call_soon``
+        把 ``_drain`` 推到当前回调之后（**R2**）。
+        """
+        self._dirty = True
+        if self._draining or not self._enabled or self._closing:
+            return
+        self._draining = True
+        if not _has_loop():
+            return
+        asyncio.get_running_loop().call_soon(lambda: asyncio.ensure_future(self._drain()))
+
+    def _start(self, reservation: Reservation) -> None:
+        """起一次调用：**fire-and-forget**，但它自己兜住一切（``scheduler.ts:1301-1317``）。
+
+        ⚠️ ``finally`` 那三步缺一不可：
+
+        * ``_end`` —— 让这次调用**从登记表里消失**、任务**重新成为候选**；
+        * ``finish`` —— 唤醒等它的东西；
+        * ``_kick`` —— **不然任务在 `_end` 之后重新可运行，但没人去排空**，
+          于是它**永远停在那里**。
+        """
+        invocation = reservation.invocation
+
+        async def job() -> None:
+            try:
+                if invocation.mode == "run":
+                    await self._run(reservation)
+                else:
+                    await self._run_abort(reservation)
+            except BaseException as error:  # noqa: BLE001 - 上游同样捕获一切
+                self._report(error)
+            finally:
+                self._end(invocation)
+                if invocation.finish is not None:
+                    invocation.finish()
+                self._kick()
+
+        if not _has_loop():
+            return
+        asyncio.get_running_loop().call_soon(lambda: asyncio.ensure_future(job()))
+
+    async def open(self, context: Any) -> None:
+        """加载活任务，并把**幸存的 ``running``** 改回 ``pending``；**不派发任何东西**
+        （``scheduler.ts:289-317``）。
+
+        ⚠️ 顺序：先挂监听器（提交 + 关闭 + 注册表），**再**做那次加载提交。
+        反过来的话，加载期间发生的提交会**丢事件**。
+
+        ⚠️ **每一个表读都在第一次写之前**——所以那些扫描在提交回调的**开头**一次性做完。
+        """
+        self._session.observe_commits(lambda publication, _ctx: self._observe(publication))
+        self._session.subscribe_close(self._seal)
+        self._unsubscribe_registry = self._registry.subscribe(self._kick)
+
+        async def change(tx: Any) -> None:
+            scans = []
+            for status in LIVE_STATUSES:
+
+                async def scan_status(cursor: Any, s: str = status) -> Any:
+                    return await tx.scan_tasks({"status": s}, SCAN_PAGE_SIZE, cursor)
+
+                scans.append(await scan_all(scan_status))
+            for records in scans:
+                for record in records:
+                    self._track(None, record)
+                    if record.get("abandonOnRestart") is True:
+                        self._abandoned.add(record["id"])
+                    if record["state"]["status"] == "running":
+                        tx.set_task(
+                            with_state(
+                                record,
+                                {"status": "pending", "checkpoint": record["state"]["checkpoint"]},
+                            )
+                        )
+                    if (
+                        record["state"]["status"] == "waiting"
+                        and record["state"].get("policy") == "failFast"
+                    ):
+                        self._fail_fast_checks.add(record["id"])
+
+        await self._session.commit_with(change, context)
+        # 推导崩溃留下的、还没施加到「已取消拥有者」下面的中止标记，并把 held 住的结果终结掉。
+        self._cascade_pending = True
+        self._schedule_reconcile()
+
+    def resume(self) -> None:
+        """使能调度（``scheduler.ts:318-325``）。**幂等**；正在关闭时 kick 什么都不做。"""
+        self._enabled = True
+        self._kick()
+
+    def wait_for_idle(self, conversation_id: int | None, context: Any) -> Any:
+        """等普通遍历（从该对话、或从每个无主对话）**到达不了任何活的非后台任务**
+        （``scheduler.ts:383-392``）。
+
+        ⚠️ 空闲判定要做**两次**：一次同步的快路径（已经空闲就直接返回），
+        一次在**登记之后**由对账驱动。只做前者会在「刚好在两次之间变空闲」时**永远等下去**。
+        """
+        if self._closing:
+            return _rejected(closed_error(self._session))
+        if self._idle(conversation_id):
+            return _resolved(None)
+        self._schedule_reconcile()
+        return self._idle_waiters.add(conversation_id, context)
+
+    async def abort_conversation(
+        self, conversation_id: int, background: bool, context: Any
+    ) -> None:
+        """``Conversation.abort()``（``scheduler.ts:396-411``）：
+
+        **一次提交里**撤回排队中的输入，并给「从该对话出发的普通遍历能到达的每一个活的非后台任务」打中止标记；
+        **等这个作用域空闲之后**才 resolve。
+
+        ``background`` 时遍历**穿过后台边界**，而且等待**也覆盖它到达的每一个任务**。
+        """
+        reached: list[int] = []
+
+        async def change(tx: Any) -> None:
+            queued = await self._load_scopes(True)
+            scope = {"conversation": conversation_id}
+            walk = self._walk_down(
+                conversation_node(conversation_id), {"crossBackground": background}
+            )
+            for step in walk:
+                node, live = step["node"], step["live"]
+                if live is None or (node["background"] and not background):
+                    continue
+                reached.append(live["id"])
+                if not live.get("abortRequested") or live.get("abortReason") is not None:
+                    tx.set_task(with_abort_mark(live))
+            for id in queued:
+                if self._in_scope({"conversation": id}, scope, background) is True:
+                    await self._withdraw_inputs(tx, id)
+
+        await self._session.commit_with(change, context)
+        if background:
+            for id in reached:
+                await self.wait_for_task(id, context)
+        await self.wait_for_idle(conversation_id, context)
+
+    def _observe(self, publication: dict[str, Any]) -> None:
+        """把一次**提交发布**施加到调度器的集合上（``scheduler.ts:418-501``）。
+
+        ⚠️ **四遍，顺序即语义**：
+
+        1. **先看对话边**——这样一次提交在**新对话**里创建的任务才能挂到它下面；
+        2. 再看任务变更：追踪、结算等待者、推导级联；
+        3. 再看提交（排队中的输入在已取消拥有者下面要被撤回）；
+        4. 最后看**新变活的任务**（在已取消拥有者下面创建的活也要被中止）。
+
+        ⚠️ 结尾那三下也有顺序：`_sweep()` **总是**跑（它清理不再需要的节点），
+        而 `_settle_idle()` / `_kick()` **只在真有任务变更时**才跑——
+        一次不含任务变更的发布不该唤醒调度器。
+        """
+        updated: list[dict[str, Any]] = []
+        failed: list[int] = []
+        changed = False
+        changes = publication["changes"]
+        # 1. 对话边**最先**。
+        for change in changes:
+            if change["type"] == "conversation" and change["value"]["id"] not in self._edges:
+                owner = change["value"].get("owner")
+                self._set_edge(change["value"]["id"], None if owner is None else owner["taskId"])
+        # 2. 任务变更。
+        for change in changes:
+            if change["type"] != "task":
+                continue
+            changed = True
+            record = change["value"]
+            previous = self._live.get(record["id"])
+            if failed_outcome(record) and (previous is None or not failed_outcome(previous)):
+                failed.append(record["id"])
+            self._track(previous, record)
+            if record["state"]["status"] == "terminal":
+                self._failed_migrations.pop(record["id"], None)
+                self._fail_fast_checks.discard(record["id"])
+                self._task_waiters.resolve(record["id"], record)
+                # 它的拥有者现在可能可以终结了。
+                self._schedule_reconcile()
+                continue
+            if record.get("abortRequested") and (
+                previous is None or previous.get("abortRequested") is not True
+            ):
+                self._cascade_pending = True
+                # ⚠️ 给**刚被标记**的那个任务**正在跑的调用**发信号；它下一步就会结束。
+                invocation = self._invocations.get(record["id"])
+                if invocation is not None and invocation.mode == "run":
+                    invocation.controller.abort()
+            # 一个**替换掉 `restart` 标记**的请求，会把下面那些活上的标记**升级**。
+            if (
+                previous is not None
+                and previous.get("abortReason") is not None
+                and record.get("abortReason") is None
+            ):
+                self._cascade_pending = True
+            status = record["state"]["status"]
+            prev_status = None if previous is None else previous["state"]["status"]
+            if status == "completing" and prev_status != "completing":
+                if cancellation_intent(record):
+                    self._cascade_pending = True
+                self._schedule_reconcile()
+            if (
+                status == "waiting"
+                and record["state"].get("policy") == "failFast"
+                and prev_status != "waiting"
+            ):
+                self._fail_fast_checks.add(record["id"])
+                self._schedule_reconcile()
+            # ⚠️ **它的拥有者与位置不会变**——所以「它上面是什么」只在它**变成活的那一刻**查一次。
+            if previous is None:
+                updated.append(record)
+        # 2b. 刚失败的任务，把它的 `failFast` 等待者排进检查。
+        for id in failed:
+            for waiter in self._waiters.get(id) or ():
+                state = (self._live.get(waiter) or {}).get("state")
+                if (
+                    state is not None
+                    and state["status"] == "waiting"
+                    and state.get("policy") == "failFast"
+                ):
+                    self._fail_fast_checks.add(waiter)
+                    self._schedule_reconcile()
+        # 3. 排队中的输入。
+        for change in changes:
+            if (
+                change["type"] != "submission"
+                or change["value"]["status"] != "queued"
+                or change["value"]["type"] != "input"
+            ):
+                continue
+            # ⚠️ **只有带取消意图的拥有者**才撤回它；后来的意图会跑级联，那时再撤回。
+            if not self._intent:
+                continue
+            conversation = change["value"]["conversationId"]
+            if not self._known(conversation_node(conversation)) or self._below_cancelled(
+                {"conversation": conversation}
+            ):
+                self._cascade_pending = True
+        # 4. 新变活的任务。
+        for record in updated:
+            # 在已取消拥有者下面**创建**的活，**即使它的级联已经跑过**，也要被中止。
+            if record["id"] in self._unloaded:
+                self._schedule_reconcile()
+            elif (
+                not record["background"]
+                and not record.get("abortRequested")
+                and self._below_cancelled(parent_of(record))
+            ):
+                self._cascade_pending = True
+        # 预留或 step 发现待处理的级联，会随**下一次任意提交**跑。
+        if self._cascade_pending:
+            self._schedule_reconcile()
+        self._sweep()
+        if not changed:
+            return
+        self._settle_idle()
+        self._kick()
+
+    # ─── 检视（``scheduler.ts:1258-1282``）──────────────────────────────────────────
+
+    async def inspect(self, snapshot: Any) -> dict[str, Any]:
+        """在**会话线上**读调度状态与每个活任务及其**派生状态**（``scheduler.ts:1260-1269``）。
+
+        ⚠️ **不跑任何任务代码**：一次待处理的迁移显示为 ``ready`` 且带 ``migrates``，
+        只有「调度器**已经试过**的迁移」或「**不可能存在**的迁移」才显示为失败。
+
+        ⚠️ 判之前要 `_load_scopes(False)`——**数据没到齐就判，会把有子任务的父误判成可运行**
+        （与 `_commit_state`/`_terminate` 同一条判据）。
+        """
+        await self._load_scopes(False)
+        tasks = [
+            {"record": record, "state": self._inspect_task(record, snapshot)}
+            for record in self._live.values()
+        ]
+        scheduling = "closing" if self._closing else ("running" if self._enabled else "paused")
+        return {"scheduling": scheduling, "tasks": tasks}
+
+    def _inspect_task(self, record: dict[str, Any], snapshot: Any) -> dict[str, Any]:
+        """一个任务的**派生状态**（``scheduler.ts:1271-1282``）。
+
+        ⚠️ **检查顺序即优先级**，而且它决定的是「**为什么它现在不跑**」：
+
+        1. **有活的调用** → ``running``（它在跑，别的原因都不重要）；
+        2. **``completing``** → 它在等它下面的活干完；
+        3. **要等东西** → ``waiting`` + **等谁**；
+        4. **没有定义 / 版本不兼容** → ``blocked`` + 原因；
+        5. **要迁移但那个定义没有迁移** → ``blocked: migration_failed``，
+           **并现在就造出那句错误**（否则调用方只知道"被挡了"，不知道**为什么**）；
+        6. 否则 ``ready`` + ``migrates``。
+        """
+        if record["id"] in self._invocations:
+            return {"kind": "running"}
+        if record["state"]["status"] == "completing":
+            return {"kind": "completing"}
+        on = self._waiting_on(record)
+        if on:
+            return {"kind": "waiting", "on": on}
+        fit = self._fit(record, snapshot.task(record["kind"]))
+        if "reason" in fit:
+            return {"kind": "blocked", **fit}
+        definition = erased(fit["task"])
+        migrate = (
+            definition.get("migrate")
+            if isinstance(definition, dict)
+            else getattr(definition, "migrate", None)
+        )
+        if fit["migrates"] and migrate is None:
+            return {
+                "kind": "blocked",
+                "reason": "migration_failed",
+                "error": missing_migration(record, definition),
+            }
+        return {"kind": "ready", "migrates": fit["migrates"]}
+
+
+class _RuntimeView:
+    """一次调用的 ``TaskRuntime`` 视图（``scheduler.ts:1590-1809``）。
+
+    ⚠️ **它是 `TaskRuntime` 契约的唯一实现位置** —— 20+ 个成员逐个接到调度器的内部状态上。
+    **不是 dataclass**：每个成员都要用造它时的 ``invocation`` 与 ``phase``，
+    而那两样在构造时固定（一次调用不换任务、不换模式、不换快照来源）。
+
+    ⚠️ 三条已确立的契约要点在这里落地：
+
+    * :meth:`memo` 用 :data:`UNSET` 哨兵——``null`` 是合法 JSON 值（R29）；
+    * :meth:`commit` 的回调**只通过 `tx` 读**（否则在它自己持有的线上排队而**永不返回**）；
+    * :attr:`models` 是 **9/24** 的限制（那 15 个未声明成员，需要时先报告）。
+    """
+
+    __slots__ = ("_phase", "_scheduler", "invocation")
+
+    def __init__(self, scheduler: TaskScheduler, invocation: Invocation, phase: Phase) -> None:
+        self._scheduler = scheduler
+        self._phase = phase
+        self.invocation = invocation
+
+    # ── agent 与钩子 ────────────────────────────────────────────────────────────────
+
+    async def agent(self, context: Any) -> Any:
+        """本任务所在对话的 agent，**每个阶段至多解析一次**、在**首次使用**时解析。
+
+        ⚠️ ``phase.agent`` 是**共享**的那次解析：第一个调用者建它，之后所有人复用。
+        每次重新解析会毁掉「每个阶段至多一次」这条语义。
+
+        ⚠️ 这个 future **可能没人 await**（第一个调用者可能中途放弃）——
+        所以它的失败**不能**变成「从未被观察」的错误。
+        """
+        s = self._scheduler
+        if self.invocation.ended:
+            raise ended_error(self.invocation)
+        if self._phase.agent is None:
+            self._phase.agent = asyncio.ensure_future(
+                s._agent(
+                    self.invocation.conversation_id,
+                    self._phase.snapshot(),
+                    self.invocation.context,
+                )
+            )
+            self._phase.agent.add_done_callback(lambda _f: None)
+        agent = self._phase.agent
+        if getattr(context, "abort_signal", None) is not None:
+            return await await_with_context(agent, context)
+        return await agent
+
+    async def each(self, name: str, invoke: Any) -> None:
+        """``HookRunner.each`` 的实现（``scheduler.ts:1605-1619``）。
+
+        ⚠️ 两种失败的处置**相反**（契约里写明了）：
+
+        * ``invoke`` **普通抛出** → 报告，然后**继续跑下一个处理器**；
+        * **调用本身被取消**（信号已中止）→ **向上传播**。
+
+        不这么写：一次钩子出错会**吞掉后面所有钩子**；而吞掉取消会让
+        「已经没人要这个结果了」之后还继续跑。
+        """
+        s = self._scheduler
+        agent = await self.agent(self.invocation.context)
+        definition = self._phase.task().definition
+        task_name = definition["name"] if isinstance(definition, dict) else definition.name
+        for handlers in agent_hooks(agent, task_name):
+            handler = (
+                handlers.get(name) if isinstance(handlers, dict) else getattr(handlers, name, None)
+            )
+            if not callable(handler):
+                continue
+            try:
+                await invoke(handler)
+            except BaseException as error:  # noqa: BLE001 - 上游同样捕获一切
+                if self.invocation.controller.signal.aborted:
+                    raise
+                s._report(error)
+
+    # ── 提交与备忘 ──────────────────────────────────────────────────────────────────
+
+    def commit(self, change: Any, context: Any) -> Any:
+        """提交；返回的状态**在同一次提交里**替换任务状态（``scheduler.ts:1628-1638``）。
+
+        ⚠️ **回调只通过 ``tx`` 读**：``snapshot()`` / ``watch_doc()`` / ``get_task()``
+        以及其它 Session 与运行时读**可能排队在回调自己持有的那条线上而永不返回**。
+        """
+        s = self._scheduler
+
+        async def on_line(tx: Any, current: dict[str, Any]) -> None:
+            next_state = change(tx, current)
+            if inspect.isawaitable(next_state):
+                next_state = await next_state
+            if next_state is not None:
+                await s._commit_state(tx, self.invocation, current, next_state)
+
+        return s._gated(self.invocation, on_line, context)
+
+    def memo(self, name: str, context: Any, candidate: Any = UNSET) -> Any:
+        """读/写一个本任务的持久备忘（``scheduler.ts:1639-1656``）。
+
+        ⚠️ **``candidate`` 用哨兵 :data:`UNSET`，不是 ``None``**：
+        ``null`` 是合法的 JSON 值，「存一个 null」必须与「只读」区分开（**R29**）。
+        """
+        s = self._scheduler
+        if candidate is UNSET:
+
+            async def read() -> Any:
+                return memo_of(s._live.get(self.invocation.task_id), name)
+
+            return s._read(self.invocation, read)
+
+        def change(tx: Any, current: dict[str, Any]) -> Any:
+            winner = memo_of(current, name)
+            # ⚠️ **不存在才存**——已存在的备忘是**持久赢家**，后来者不覆盖它。
+            if winner is not None:
+                return winner
+            memos = dict(current.get("memos") or {})
+            memos[name] = candidate
+            tx.set_task({**current, "memos": memos})
+            return candidate
+
+        return s._gated(self.invocation, change, context)
+
+    # ── 读 ──────────────────────────────────────────────────────────────────────────
+
+    def snapshot(self, *args: Any) -> Any:
+        """转发 ``Session.snapshot``（``scheduler.ts:1657-1660``）。"""
+        s = self._scheduler
+        return s._read(self.invocation, lambda: session_method(s._session, "snapshot")(*args))
+
+    def snapshot_as_of(self, *args: Any) -> Any:
+        """转发 ``Session.snapshotAsOf``（``scheduler.ts:1661-1664``）。"""
+        s = self._scheduler
+        return s._read(self.invocation, lambda: session_method(s._session, "snapshot_as_of")(*args))
+
+    def get_task(self, id: int, context: Any) -> Any:
+        """读一条**已提交**的任务记录（``scheduler.ts:1665-1669``）。"""
+        s = self._scheduler
+        return s._read(
+            self.invocation,
+            lambda: s._session.read_on_line(lambda: s._storage.task(id, context)),
+        )
+
+    def wait_for_task(self, id: int, context: Any) -> Any:
+        """等一个任务终局（``scheduler.ts:1670-1674``）。
+
+        ⚠️ 传进去的上下文**再叠上这次调用的信号**——调用一结束，这个等待**跟着拒绝**，
+        而不是一直等到任务真的终局。
+        """
+        s = self._scheduler
+        bound = with_abort_signal(self.invocation.controller.signal, context)
+        return s._read(self.invocation, lambda: s.wait_for_task(id, bound))
+
+    def owned_tasks(self, context: Any) -> Any:
+        """本任务**直接拥有**的活任务，按 ID 序（``scheduler.ts:1675-1694``）。
+
+        返回**副本**——调度器读它自己那份，所以调用方改不了调度器的状态。
+        """
+        s = self._scheduler
+        invocation = self.invocation
+
+        async def read() -> list[Any]:
+            async def on_line() -> list[Any]:
+                # ⚠️ 结束这次调用的那一步可能已经先在线上了。
+                if invocation.ended:
+                    raise ended_error(invocation)
+                signal = getattr(context, "abort_signal", None)
+                if signal is not None:
+                    signal.throw_if_aborted()
+                owned: list[Any] = []
+                # ⚠️ 每个活任务都列在**它父节点**下面——有拥有者时就是那个拥有者任务。
+                for node in s._below.get(invocation.task_id, set()):
+                    if isinstance(node, str):
+                        continue
+                    record = s._live.get(node)
+                    if record is not None and record.get("owner") == invocation.task_id:
+                        owned.append(record)
+                owned.sort(key=lambda r: r["id"])
+                return [copy_json(r) for r in owned]
+
+            return cast("list[Any]", await s._session.read_on_line(on_line))
+
+        return s._read(invocation, read)
+
+    def abort_owned(self, id: int, context: Any) -> Any:
+        """中止一个**本任务拥有**的任务，并等它终局（``scheduler.ts:1695-1699``）。"""
+        s = self._scheduler
+        invocation = self.invocation
+
+        async def read() -> None:
+            bound = with_abort_signal(invocation.controller.signal, context)
+            record = await s._session.read_on_line(lambda: s._storage.task(id, bound))
+            if record is None or record.get("owner") != invocation.task_id:
+                raise RuntimeError(f"Task {id} is not owned by task {invocation.task_id}")
+            if record["state"]["status"] == "terminal":
+                return
+            await s.abort(id, bound, True)
+            await s.wait_for_task(id, bound)
+
+        return s._read(invocation, read)
+
+    def outcomes(self, ids: list[int], context: Any) -> Any:
+        """终局任务的结果，按序（``scheduler.ts:1700-1712``）。
+
+        任一个**缺失或不是终局**时报错——它只在一次等待**之后**调。
+        """
+        s = self._scheduler
+
+        async def read() -> list[Any]:
+            async def on_line() -> list[Any]:
+                found: list[Any] = []
+                for id in ids:
+                    record = await s._storage.task(id, context)
+                    state = None if record is None else record["state"]
+                    if state is None or state["status"] != "terminal":
+                        raise RuntimeError(f"Task {id} is not terminal")
+                    found.append(state["outcome"])
+                return found
+
+            return cast("list[Any]", await s._session.read_on_line(on_line))
+
+        return s._read(self.invocation, read)
+
+    def conversation(self, id: int, context: Any) -> Any:
+        """一个**已存在**对话的调用期句柄（``scheduler.ts:1713-1725``）。
+
+        ⚠️ 它的 ``check`` 与调用绑在一起：句柄的操作在**调用结束后**拒绝。
+        """
+        s = self._scheduler
+        invocation = self.invocation
+        binding = {
+            "signal": invocation.controller.signal,
+            "check": lambda: _check_not_ended(invocation),
+        }
+        return s._read(invocation, lambda: s._conversation(id, binding, context))
+
+    def entry(self, id: int, context: Any, token: Any = None) -> Any:
+        """读一条**本任务所在对话可见**的已提交条目（``scheduler.ts:1726-1737``）。
+
+        给了 ``token`` 就按它的种类收窄。**上游是位置参数重载 ``(token, id, context)``**；
+        本包照 `TaskRuntime` 契约把令牌放在**第三个**（与 :meth:`Tx.entry` 同一取舍）。
+        """
+        s = self._scheduler
+        invocation = self.invocation
+
+        async def read() -> Any:
+            # ⚠️ **本端有两条不同的读**：`Storage.entry(id, context)`（全局）
+            # 与 `Storage.entry_in_conversation(conversation_id, id, context)`（**本对话可见**）。
+            # 用错会报 `entry() takes 3 positional arguments but 4 were given`。
+            # 上游只有一条 `entry(conversationId, id, context)`，所以那里没有这个岔路。
+            found = await s._session.read_on_line(
+                lambda: s._storage.entry_in_conversation(invocation.conversation_id, id, context)
+            )
+            record = None if found is None else found.get("entry")
+            if token is None:
+                return record
+            kind = token.kind if hasattr(token, "kind") else token["kind"]
+            return record if record is not None and record.get("kind") == kind else None
+
+        return s._read(invocation, read)
+
+    def context(
+        self, conversation_id: int, context: Any, options: dict[str, Any] | None = None
+    ) -> Any:
+        """已提交的活动 transcript 与模型上下文（``scheduler.ts:1738-1770``）。
+
+        ⚠️ 它同时做两件事：**派生视图** + **维护上下文缓存**。缓存那半有四条前置条件，
+        缺一就会**缓存住一份过期的范围**：范围存在 / 调度器没在关闭 /
+        **这次调用没结束** / 缓存里没有更新的范围。
+        """
+        s = self._scheduler
+        invocation = self.invocation
+
+        async def read() -> Any:
+            from pi_durable.harness.context import read_context_from
+
+            kept = s._contexts.get(conversation_id)
+            view, range_ = await read_context_from(
+                s._session,
+                s._storage,
+                conversation_id,
+                context,
+                None if options is None else options.get("at"),
+                None if kept is None else kept["range"],
+            )
+            current = s._contexts.get(conversation_id)
+            if (
+                range_ is not None
+                and not s._closing
+                and not invocation.ended
+                and (current is None or current["range"].bounds.tail <= range_.bounds.tail)
+            ):
+                if not s._idle(conversation_id):
+                    s._contexts[conversation_id] = {"range": range_, "idleSince": None}
+                elif s._context_retention_ms() > 0:
+                    s._contexts[conversation_id] = {
+                        "range": range_,
+                        "idleSince": (current or {}).get("idleSince") or s._now(),
+                    }
+                    s._schedule_expiry()
+            return view
+
+        return s._read(invocation, read)
+
+    # ── 其它 ────────────────────────────────────────────────────────────────────────
+
+    def now(self) -> int:
+        """Harness 时钟（``scheduler.ts:1771-1774``）。
+
+        ⚠️ **原样返回宿主给的值，不要 ``float()``**：上游的 ``now()`` 交出什么就是什么，
+        而本仓宿主给它的是 **int 毫秒**。我第一版强制转成 float，
+        于是 ``timestamp`` 变成 ``1.0`` 而 pydantic 的字段是 ``int``——
+        **它不报错，只发一条序列化警告**（`PydanticSerializationUnexpectedValue`），
+        而那条警告会一路带进存储的记录里。
+        """
+        if self.invocation.ended:
+            raise ended_error(self.invocation)
+        return int(self._scheduler._now())
+
+    def report(self, error: BaseException) -> None:
+        """把一个**非致命**失败转给宿主（``scheduler.ts:1775-1778``）。"""
+        if self.invocation.ended:
+            raise ended_error(self.invocation)
+        self._scheduler._report(error)
+
+    def sleep(self, until: float, context: Any) -> Any:
+        """等到 Harness 时钟走到 ``until``（``scheduler.ts:1652``）。"""
+        return self._scheduler._sleep(self.invocation, until, context)
+
+    def watch_doc(self, token: Any, *address: Any) -> Any:
+        """观察一个已提交文档；**不存在时返回 ``None``**（``scheduler.ts:1653``）。
+
+        `TaskRuntime` 继承的两个父接口之一（另一个是 ``DocumentReader``）。
+        """
+        return self._scheduler._watch_doc(self.invocation, [token, *address])
+
+    def env(self, context: Any) -> Any:
+        """为本任务所在对话调一次 ``HarnessOptions.env``（``scheduler.ts:1625``）。"""
+        s = self._scheduler
+        return s._read(self.invocation, lambda: s._env(self.invocation.conversation_id, context))
+
+    @property
+    def task_id(self) -> int:
+        return self.invocation.task_id
+
+    @property
+    def conversation_id(self) -> int:
+        return self.invocation.conversation_id
+
+    @property
+    def signal(self) -> Any:
+        return self.invocation.controller.signal
+
+    @property
+    def models(self) -> Any:
+        return self._scheduler._models
+
+    @property
+    def registry(self) -> Any:
+        return self._phase.snapshot()
+
+    @property
+    def settings(self) -> Any:
+        return self._scheduler._settings()
+
+    @property
+    def hooks(self) -> Any:
+        """``HookRunner`` 就是**这个视图自己**——它实现了 ``each``。
+
+        ⚠️ **不要给它单独建对象**：``each`` 要用这次调用的 ``invocation`` 与 ``phase``
+        （钩子按阶段快照的注册表顺序取、失败处置要看调用信号是否已中止）。
+        单建一个对象会让它看到**与视图不一致**的状态——而那种不一致**不会报错**，
+        只会让钩子在错误的阶段、按错误的顺序跑。
+        """
+        return self
+
+
+def _check_not_ended(invocation: Invocation) -> None:
+    if invocation.ended:
+        raise ended_error(invocation)
 
 
 def _resolved(value: Any) -> Any:

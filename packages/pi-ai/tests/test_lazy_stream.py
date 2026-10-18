@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import time
 from collections.abc import AsyncIterator
 
@@ -196,6 +197,85 @@ def test_lazy_stream_result_never_hangs_on_empty_source() -> None:
         assert "no result" in (result.error_message or "").lower()
 
     asyncio.run(run())
+
+
+#: 真实单调钟。必须在类体外取：类体内的 `time` 会先命中类命名空间里刚定义的
+#: `time` 方法（而不是模块 `time`），从而 `time.monotonic` 报 AttributeError。
+_REAL_MONOTONIC = time.monotonic
+
+
+class _TickingClock:
+    """每次读 ``time()`` 前进 1ms 的假时钟。
+
+    用途：把 ``lazy_stream`` 的 **1ms 竞态**变成**确定性**断言。真实时钟下该竞态
+    命中率约 0.1%/次（只在毫秒刻度恰好落在两次读钟之间时发生），单文件跑几乎不
+    出现、全仓跑偶发——正是它此前以 flaky 形式暴露的原因。
+    """
+
+    def __init__(self, start_ms: int) -> None:
+        self._next = itertools.count(start_ms)
+
+    def time(self) -> float:
+        return next(self._next) / 1000.0
+
+    #: 耗时测算用真实单调钟（不受本假时钟影响）
+    monotonic = staticmethod(_REAL_MONOTONIC)
+
+
+def test_setup_error_duration_survives_the_1ms_tick_boundary(monkeypatch) -> None:
+    """**确定性**证明：毫秒刻度落在两次读钟之间时，setup 失败消息仍被计入 duration_ms。
+
+    假时钟每次读都前进 1ms，于是"先取时刻再建流"的旧顺序必然满足
+    ``message.timestamp < stream._started_at_ms``（差 1），从而被 ``_time()``
+    的"早于流创建时刻"守卫跳过。本端把取时刻挪到建流**之后**，该守卫不再命中。
+
+    本用例自带**判别性证明**（见下方断言）：同一假时钟下按旧顺序构造的消息确实
+    ``duration_ms is None``——所以这不是一条恒真的空断言。
+    """
+    import pi_ai.event_stream as event_stream_mod
+    import pi_ai.lazy as lazy_mod
+
+    fake = _TickingClock(1_700_000_000_000)
+    monkeypatch.setattr(lazy_mod, "time", fake)
+    monkeypatch.setattr(event_stream_mod, "time", fake)
+
+    async def failing_setup() -> AssistantMessageEventStream:
+        raise RuntimeError("no api key")
+
+    async def run() -> AssistantMessage:
+        return await lazy_stream(_model(), failing_setup).result()
+
+    result = asyncio.run(run())
+    assert result.stop_reason == "error"
+    assert result.duration_ms is not None, "setup 失败消息未被计时（1ms 竞态复现）"
+
+    # ---- 判别性证明：同一假时钟下，旧顺序（先取时刻、再建流）必然丢计时 ----
+    stale = _create_setup_error_message_for_test(_model(), int(fake.time() * 1000))
+    later_stream = event_stream_mod.AssistantMessageEventStream()  # 起点比 stale 晚 1ms
+    later_stream.end(stale)
+    assert stale.duration_ms is None, "假时钟没能复现竞态，该用例已失去判别力"
+
+
+def _create_setup_error_message_for_test(model, timestamp: int):
+    from pi_ai.lazy import _create_setup_error_message
+
+    return _create_setup_error_message(model, RuntimeError("stale"), timestamp)
+
+
+def test_lazy_stream_uses_the_stream_start_not_a_pre_stream_clock_read() -> None:
+    """静态回归守卫：``lazy_stream`` 里建流必须在取时刻**之前**。
+
+    直接断言源码顺序，防止有人"照上游对齐"把两行换回去而让竞态复活
+    （上游 ``api/lazy.ts:50-51`` 就是这个顺序）。
+    """
+    import inspect
+
+    import pi_ai.lazy as lazy_mod
+
+    source = inspect.getsource(lazy_mod.lazy_stream)
+    create_at = source.index("outer = AssistantMessageEventStream()")
+    clock_at = source.index("started_at = int(time.time() * 1000)")
+    assert create_at < clock_at, "建流必须在取时刻之前（否则 1ms 竞态复活）"
 
 
 def test_lazy_stream_duration_is_not_double_stamped() -> None:

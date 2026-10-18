@@ -21,10 +21,39 @@ def definition(name: str = "pi.demo") -> dict[str, Any]:
 
 
 def test_define_task_wraps_the_definition_unchanged() -> None:
-    """上游就是 ``defineTask(definition) => ({ definition })``——**原样包起来**，不改内容。"""
+    """上游就是 ``defineTask(definition) => ({ definition })``——**原样包起来**，不改内容。
+
+    ⚠️ **本端不保留身份，只保留内容**：传进来的是 dict 时，`define_task` 会把它包成
+    :class:`~pi_durable.tasks.Definition`（一个同时支持**下标与属性**访问的 dict 子类）。
+
+    为什么要包：**批次 B 的 `_create_task` 用属性访问、批次 D 的调度器用下标**——
+    两半各自都测过、都过了，**合起来才炸**（`AttributeError: 'dict' object has no attribute 'initial'`）。
+    见 `tool_task_e2e_wip.py` 的 bug 表第 2 条。
+    """
     original = definition()
     task = define_task(original)
-    assert task.definition is original
+    assert task.definition == original  # 内容不变
+    # ⚠️ **两种访问都要能用**——这正是包装的目的
+    assert task.definition["name"] == original["name"]
+    assert task.definition.name == original["name"]
+
+
+def test_define_task_leaves_a_non_mapping_definition_alone() -> None:
+    """⚠️ **只包 Mapping**：dataclass 定义本身就有属性，
+    包成 dict 子类会报 `'X' object is not iterable`。"""
+    from dataclasses import dataclass
+
+    @dataclass
+    class Demo:
+        name: str = "pi.demo"
+        version: int = 1
+
+        def initial(self, input_: object) -> dict[str, object]:
+            return {}
+
+    demo = Demo()
+    task = define_task(demo)
+    assert task.definition is demo
 
 
 def test_define_task_returns_a_value_with_a_definition_member() -> None:

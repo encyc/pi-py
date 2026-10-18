@@ -43,9 +43,10 @@ def _create_setup_error_message(
 ) -> AssistantMessage:
     """构造 setup 失败的 error 消息。对应上游 ``createSetupErrorMessage``。
 
-    ``timestamp`` 取**请求开始**时刻（调用 :func:`lazy_stream` 时），而非失败时刻
-    ——这样 ``AssistantMessageEventStream`` 才会为它计入 ``duration_ms``
-    （后者要求消息时间戳不早于流创建时刻）。上游同样传 ``startedAt``。
+    ``timestamp`` 取 :func:`lazy_stream` **建流那一刻**（而非失败时刻）——这样
+    ``AssistantMessageEventStream`` 才会为它计入 ``duration_ms``（后者要求消息
+    时间戳不早于流创建时刻）。上游同样传 ``startedAt``，但取时刻的**顺序**不同，
+    见 :func:`lazy_stream` 里的说明。
     """
     return AssistantMessage(
         api=model.api,
@@ -139,8 +140,21 @@ def lazy_stream(
 
         return lazy_stream(model, lambda: self._prepare_and_stream(model, context, options))
     """
-    started_at = int(time.time() * 1000)
+    # 顺序关键：**先建流，再取时刻**。
+    #
+    # 上游 ``api/lazy.ts:50-51`` 是反过来的（``const startedAt = Date.now()`` 在
+    # ``new AssistantMessageEventStream()`` 之前），于是存在一个 1ms 竞态：若毫秒刻度
+    # 恰好落在两次读钟之间，``started_at`` 会比流内部的 ``_started_at_ms`` 小 1，
+    # 而 ``AssistantMessageEventStream._time()`` 对"时间戳早于流创建时刻"的消息
+    # **跳过计时**（该守卫是为延迟响应设计的），导致 setup 失败消息的 ``duration_ms``
+    # 静默缺失。
+    #
+    # 本端把取时刻挪到建流之后，使 ``started_at >= outer 的起点`` 恒成立，从而
+    # 兑现 :func:`_create_setup_error_message` 与 ``event_stream._time`` 两处文档
+    # 写明的意图。这是**有意偏离上游**，已在 PORTING.md 登记。
+    # 有测试以"每次读钟前进 1ms"的假时钟把该竞态变成确定性断言。
     outer = AssistantMessageEventStream()
+    started_at = int(time.time() * 1000)
 
     async def drive() -> None:
         try:
