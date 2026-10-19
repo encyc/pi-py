@@ -2247,6 +2247,45 @@ def test_unimplemented_methods_do_not_exist_yet() -> None:
 **判据**：**下标访问要么有契约保证，要么换成 `max`/`min`/显式排序。**
 （与「`max_tokens <= 0` 时**不设上限而不是取 0**」并列：**都是"位置/数值边界上的语义"**。）
 
+## ⚠️ 清 4 条 `xfail` 时揪出的**一个实现缺陷 + 三条测试基建认知**
+
+### ① 实现缺陷（**已修**）：`_run` 的 phase 处理器查询在 `try` **外面**
+
+上游是 ``await erased(state.task).phases[checkpoint.phase]!(...)`` —— **整个表达式都在 try 内**。
+我第一版把 ``handler = phases[...]`` 放在 **`try` 外面**，于是**一个未知 phase 名**会：
+
+1. 抛 `KeyError` → **逃出 `_run`** → `_start` 的 catch **只 `report` 它**；
+2. 而 `_start` 的 `finally` 会 `_end` + `_kick` → 任务**重新可运行**；
+3. `_reserve` 再预留 → 再抛 → **无限自旋 + 报告风暴**
+   （实测一次跑出**上百条** `KeyError: 'prepare'`，而任务**永远不到终局**）。
+
+**⇒ 移进 `try` 之后**，它就是「普通的一次 phase 失败」→ `previous.failure` →
+下一次裁决按规则 6 落成 `faulted` → 任务**正常终局**。
+
+⚠️ **判据**：**「只 report 不 fault」的错误路径 + 「finally 里重新排队」的组合 = 无限自旋。**
+凡是 `finally` 会**把任务放回可运行集合**的地方，`try` 必须**包住所有可能抛的语句**
+（不只是"用户代码"那一段）。
+
+### ② `tx.task()` 返回的是**被记忆化的那份 dict** —— 原地改它会污染 memo
+
+`Transaction._committed_task` 是**记忆化**的（上游 `task.committedRead ??=` 同样），
+而 `tx.task(id)` 把**那个被记住的 dict 本身**交给你。原地改它之后，
+`_validate_task_replacements` 再读同一个 id 时拿到的是**你改过的那份** ——
+于是它以为「存储里已经终局」，报 `Task 4 is already terminal`（**而存储里其实是 `pending`**）。
+
+**⇒ 照上游 `withState(record, …)` 的习惯：建一份新的**（`{**record, "state": {...}}`）。
+**不要在 `tx.task()` 的返回值上原地改。**
+
+### ③ `_reserve` 的第一条过滤是 `id in self._invocations`
+
+测试若为了拿到真 runtime 而 `_create_invocation(...)`，**那个调用必须在跑调度器之前 `_end()`** ——
+否则 `_reserve` 会**直接跳过这个任务**（它以为已经有活调用），任务永远停在 `waiting`。
+
+### ④ `open()` 是 `#live` / `#runnable` 的**唯一**填充路径
+
+`make_harness` 故意不自己 `open`（好让测试决定时机）。**不 `open` 就 `resume`，
+`#live` 是空的**，`_reserve` 什么也找不到 —— 任务**永远停在 `pending`**。
+
 ## ⚠️「会过期的断言」的**第 5 种形态：`xfail(strict=True)`**
 
 | 形态 | 临时性事实 | 谁叫 |

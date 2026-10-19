@@ -2049,8 +2049,21 @@ class TaskScheduler:
             phase.agent = None
             definition = erased(state["task"])
             phases = definition["phases"] if isinstance(definition, dict) else definition.phases
-            handler = phases[checkpoint["phase"]]
             try:
+                # ⚠️ **取处理器必须在 `try` 里** —— 上游是
+                # ``await erased(state.task).phases[checkpoint.phase]!(...)``，
+                # **整个表达式都在 try 内**。
+                #
+                # 我第一版把 `handler = phases[...]` 放在 `try` **外面**，于是
+                # **一个未知 phase 名**（例如把生成任务的 `prepare` 检查点用在
+                # 一个 `pi.tool` 任务上）会：
+                #   ① 抛 `KeyError` → 逃出 `_run` → `_start` 的 catch **只 `report` 它**；
+                #   ② 而 `_start` 的 `finally` 会 `_end` + `_kick` → 任务**重新可运行**；
+                #   ③ `_reserve` 再预留 → 再抛 → **无限自旋 + 报告风暴**
+                #      （实测一次跑出上百条 `KeyError: 'prepare'`，任务**永远不到终局**）。
+                # 放进来之后它就是**普通的一次 phase 失败** → `previous.failure` →
+                # 下一次裁决按规则 6 落成 `faulted` → 任务**正常终局**。
+                handler = phases[checkpoint["phase"]]
                 result = handler(current, runtime, invocation.context)
                 if inspect.isawaitable(result):
                     await result

@@ -163,20 +163,16 @@ async def test_abort_brings_the_task_to_terminal_with_the_right_code(
 
 
 @pytest.mark.parametrize("backend", ["memory", "sqlite"])
-@pytest.mark.xfail(
-    reason="🚧 **未完成**：`abort` 三态**状态机结果**的端到端（任务停在 `pending`，未到 `terminal`）。"
-    "已确认的不是实现缺陷——是我这条测试的构造：我**直接改记录**置 `abortRequested`+`abortReason='restart'`，"
-    "而 `restart` 标记的语义是**保留标记并继续等定义**（见 `abort(keep_restart=True)`）。"
-    "要测「重启后已经跑过 execute」应当走 `abort(..., keep_restart=False)` 或造一个真调用。"
-    "三态**文案**已由 `test_harness_tool_task_helpers.py` 的单元测试逐条钉住。",
-    strict=True,
-)
 async def test_abort_after_a_restart_says_it_may_have_partially_run(
     backend: str, tmp_path: Path
 ) -> None:
     """⚠️ 重启时**已进入 ``execute``** → ``interrupted``（**可能已经部分跑过**）。
 
     说「被中止」而不说「可能已经跑过」，**会让人以为重试是安全的**。
+
+    ⚠️ **这条此前挂着 `xfail(strict=True)`，根因不是实现也不是"构造语义"，而是
+    「测试没有 `open`」** —— `_reserve` 只在调度器的 `#live` 里找候选，而 `#live`
+    是 `open()` 那次加载提交填的。**不 `open` 就 `resume`，它什么也找不到。**
     """
     session, scheduler = await make_harness(backend, tmp_path, [make_tool()])
     try:
@@ -201,6 +197,11 @@ async def test_abort_after_a_restart_says_it_may_have_partially_run(
             tx.set_task(task)
 
         await session.commit(restart, CTX)
+        # ⚠️ **必须 `open`**：`_reserve` 只在调度器的 `#live` 里找候选，而 `#live` 是
+        # `open()` 那次加载提交填的。**不 `open` 就 `resume`，`#live` 是空的** ——
+        # 于是 `_reserve` 什么也找不到，任务**永远停在 `pending`**（我此前就是这样）。
+        # （`make_harness` 故意不自己 `open`，好让测试决定时机。）
+        await scheduler.open(CTX)
         scheduler.resume()
 
         settled = await asyncio.wait_for(scheduler.wait_for_task(task_id, CTX), 5)

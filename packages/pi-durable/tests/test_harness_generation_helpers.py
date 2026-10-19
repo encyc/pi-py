@@ -28,6 +28,7 @@ import pytest
 from pi_chord.context import BACKGROUND_CONTEXT as CTX
 from pi_durable.entries import AssistantEntry, UserEntry
 from pi_durable.harness.generation import (
+    GenerationTask,
     create_tool_task,
     fail_model_error,
     fail_no_model,
@@ -672,18 +673,6 @@ async def test_an_overflow_is_never_retried(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    reason="🚧 **测试驱动错了 invocation**（细化后的根因，比第一版准确）："
-    "`_compaction_abort_phase` 的提交走 `runtime.commit` → `_RuntimeView.commit` → `_gated`，"
-    "而 **`_gated` 写的是 `invocation.task_id` 那个任务** —— 也就是 `_real_runtime` 建的**生成任务**，"
-    "**不是压缩子任务**。所以子任务永远停在 `pending`，而**状态撤除其实跑在了生成任务上**。"
-    "⇒ **补法不是「置 running」**（那只解决了 `_gated` 的第 4 条），"
-    "而是**让这次 abort 跑在子任务自己的 invocation 下**（`_create_invocation(child_record, 'abort')` "
-    "+ `scheduler._runtime(...)`）。"
-    "⚠️ **实现侧不需要改** —— 是测试用错了调用者。"
-    "⚠️ 而这条测试**因此没有验证到 abort**，别把它当覆盖。",
-    strict=True,
-)
 async def test_compaction_abort_removes_the_status_and_leaves_no_half_summary(
     tmp_path: Path,
 ) -> None:
@@ -696,6 +685,8 @@ async def test_compaction_abort_removes_the_status_and_leaves_no_half_summary(
     1. `pi.live` 上的**压缩状态真被撤掉**（不是"标记成失败"）；
     2. **没有留下半压缩的摘要条目**（`pi.compaction` 条目数为 0）；
     3. 任务终局为 **`aborted`**。
+
+    ⚠️ 本条此前挂 `xfail(strict=True)`，根因是**测试驱动错了调用者**（见下方「关键」注释）。
     """
     from pi_durable.harness.compaction import CompactionTask, _compaction_abort_phase
     from pi_durable.harness.live import add_compaction_status
@@ -721,22 +712,33 @@ async def test_compaction_abort_removes_the_status_and_leaves_no_half_summary(
             return int(child)
 
         child = await session.commit(setup, CTX)
-        # ⚠️ **必须置成 `running` 并放进调度器的 `#live`** ——
-        # `_gated` 第 4 条只放行 `running`，否则 commit 失败、任务停在 `pending`
-        # （我第一版就是这样：`assert 'pending' == 'terminal'`）。
-        _child_record = await session._storage.task(child, CTX)  # noqa: SLF001
-        _child_record["state"]["status"] = "running"
-        scheduler._live[child] = _child_record  # noqa: SLF001
+        # ⚠️ **必须置成 `running`**：`_gated` 第 4 条只放行 `running` 的任务。
         child_record = await session._storage.task(child, CTX)  # noqa: SLF001
         child_record["state"]["status"] = "running"
         scheduler._live[child] = child_record  # noqa: SLF001
+
         live = await session.snapshot(LiveDoc, conversation_id, CTX)
         from pi_durable.harness.live import compaction_status
 
         assert compaction_status(live, child) is not None  # 先确认它真的挂上了
 
-        runtime.task_id = child  # type: ignore[attr-defined]  # abort 阶段按这个 id 找状态
-        await _compaction_abort_phase(None, runtime, CTX)
+        # ⚠️ **关键：让这次 abort 跑在「子任务自己的 invocation」下。**
+        #
+        # `_compaction_abort_phase` 的提交走 `runtime.commit` → `_RuntimeView.commit` → `_gated`，
+        # 而 **`_gated` 写的是 `invocation.task_id` 那个任务**。若复用生成任务的 runtime，
+        # 撤除会**跑在生成任务上**，而**子任务永远停在 `pending`** —— 这正是本条此前 xfail 的原因。
+        child_invocation = scheduler._create_invocation(child_record, "abort")  # noqa: SLF001
+        child_runtime = scheduler._runtime(  # noqa: SLF001
+            child_invocation,
+            # `_compaction_abort_phase` **不用** phase（它的第一个参数被忽略），给个最小即可。
+            Phase(
+                snapshot=lambda: scheduler._registry.snapshot(),  # noqa: SLF001
+                task=lambda: type(
+                    "T", (), {"definition": {"name": "pi.compaction", "phases": {}}}
+                )(),
+            ),
+        )
+        await _compaction_abort_phase(None, child_runtime, CTX)
 
         live = await session.snapshot(LiveDoc, conversation_id, CTX)
         # ① 状态**真被撤掉**
@@ -754,16 +756,6 @@ async def test_compaction_abort_removes_the_status_and_leaves_no_half_summary(
         await session.close(CTX)
 
 
-@pytest.mark.xfail(
-    reason="🚧 **`ReadAfterWrite` 在 `create_compaction` 内部**：我在 `setup` 里把 `tx.task(...)` "
-    "挪到了 `create_compaction` **之前**，但 `create_compaction` **自己**会写 `tx.doc(...)`"
-    "（`add_compaction_status`）—— 于是同一个事务里仍然是「先写后读」。"
-    "⇒ **补法**：把「读旧记录」与「建压缩」拆成**两个事务**（先读、再在建之前不需要读）。"
-    "⚠️ 这条测试的**构造是对的**（真 `create_compaction` + 真 `waiting`/`on` 关系 + "
-    "让子任务终局后跑调度器），差的只是事务边界。"
-    "⚠️ 实现侧不需要改。",
-    strict=True,
-)
 async def test_a_blocking_compaction_resumes_the_generation_that_waits_for_it(
     tmp_path: Path,
 ) -> None:
@@ -771,56 +763,93 @@ async def test_a_blocking_compaction_resumes_the_generation_that_waits_for_it(
 
     断言的是「**生成真的继续了**」，而不只是「子任务完成了」：
 
-    1. 先造出真实关系：生成 `waiting` + `on: [child]`（用真的 `create_compaction`）；
-    2. **让子任务终局**（直接改记录，模拟它跑完）；
+    1. 先造出真实关系：**一个 `pi.generation` 任务** `waiting` + `on: [child]`
+       （用真的 `create_compaction`，且 `owner` 就是那个生成 ⇒ 阻塞式）；
+    2. **让子任务终局**（模拟它跑完）；
     3. ⚠️ **然后跑调度器** —— 生成应当**从 `waiting` 恢复**，而不是永远停在那里。
 
     ⚠️ 这条与 :func:`test_an_overflow_starts_a_blocking_compaction_and_goes_back_to_prepare`
     的分工：那条验「生成进入等待」，这条验「**等待被解开之后它继续跑**」。
+
+    ⚠️ 本条此前挂 `xfail(strict=True)`。它在修的过程中**暴露了两个真问题**：
+    ① 「任务种类用错」（`pi.tool` 的检查点里写了生成的 `prepare`）——
+    它触发了实现侧一个**真正的缺陷**（取 phase 处理器在 `try` 外面 → 无限自旋），**已修**；
+    ② 事务边界（`ReadAfterWrite`）——**已按「拆两个事务」修**。
     """
     from pi_durable.harness.compaction import create_compaction
     from pi_durable.harness.live import add_compaction_status
 
     session, scheduler = await make_harness("memory", tmp_path, [make_tool()])
     try:
-        runtime = await _real_runtime(session, scheduler, ["a"])
-        conversation_id = runtime.conversation_id
+        conversation = await session.commit(lambda tx: tx.create_root_conversation(), CTX)
+        conversation_id = conversation["id"]
 
-        # ① 造真实关系：生成 `waiting` + `on: [child]`。
+        # ⚠️ **事务 A**：先建那个**生成任务**（`pi.generation`）。
+        # ⚠️ 本测试此前用的是 `_real_runtime` 建的 **`pi.tool`** 任务，却在检查点里写了
+        # **生成任务**的 `prepare` 阶段 —— 于是 `_run` 取处理器时 `KeyError: 'prepare'`，
+        # 而那个 KeyError 当时在 `try` **外面**，导致**无限自旋 + 报告风暴**。
+        # （实现侧已修：取处理器挪进了 `try`；这里则是把**任务种类**改对。）
+        generation = await session.commit(
+            lambda tx: tx.create_task(
+                GenerationTask,
+                {},
+                {"ownership": {"kind": "conversation"}, "conversationId": conversation_id},
+            ),
+            CTX,
+        )
+
+        # ⚠️ **事务 B**：读旧记录 → 建压缩 → 写等待状态。
+        # **必须分两个事务**：`create_compaction` 自己会写 `tx.doc(...)`
+        # （`add_compaction_status`），所以「读旧记录」若与它在同一事务里就必然
+        # 触发 `ReadAfterWrite`（一条本端明确的不变量）。
         async def setup(tx: Any) -> int:
-            live = await tx.doc(LiveDoc, conversation_id)
+            record = await tx.task(generation)  # ⚠️ 读必须在任何写之前
             child = await create_compaction(
-                tx, conversation_id, {"reason": "threshold"}, runtime.task_id
+                tx, conversation_id, {"reason": "threshold"}, generation
             )
-            _ = live
-            record = await tx.task(runtime.task_id)
-            record["state"] = {
-                "status": "waiting",
-                "policy": "allSettled",
-                "on": [child],
-                "checkpoint": {
-                    "phase": "prepare",
-                    "attempt": 1,
-                    "compacted": child,
-                    "threshold": True,
-                },
-            }
-            tx.set_task(record)
+            tx.set_task(
+                {
+                    **record,
+                    "state": {
+                        "status": "waiting",
+                        "policy": "allSettled",
+                        "on": [child],
+                        "checkpoint": {
+                            "phase": "prepare",
+                            "attempt": 1,
+                            "compacted": child,
+                            "threshold": True,
+                        },
+                    },
+                }
+            )
             return child
 
         child = await session.commit(setup, CTX)
-        record = await session._storage.task(runtime.task_id, CTX)  # noqa: SLF001
+        record = await session._storage.task(generation, CTX)  # noqa: SLF001
         assert record["state"]["status"] == "waiting"
         assert record["state"]["on"] == [child]
 
         # ② 让子任务终局（模拟它跑完）——**保持 `blocking` 状态挂在那里**。
         async def finish(tx: Any) -> None:
             child_record = await tx.task(child)
-            child_record["state"] = {
-                "status": "terminal",
-                "outcome": {"status": "completed", "result": {"entryId": 1}},
-            }
-            tx.set_task(child_record)
+            # ⚠️ **千万不要原地改 `tx.task()` 返回的那份记录！**
+            #
+            # `Transaction._committed_task` 是**记忆化**的（上游 `task.committedRead ??=` 同样），
+            # 而 `tx.task(id)` 把**那个被记住的 dict 本身**交给你。原地改它之后，
+            # `_validate_task_replacements` 再读同一个 id 时拿到的是**你改过的那份** ——
+            # 于是它以为「存储里已经终局」，报 `Task 4 is already terminal`（**而存储里其实是 pending**）。
+            #
+            # ⇒ 本端照上游的 `withState(record, …)` 习惯：**建一份新的**（展开 + 覆盖）。
+            tx.set_task(
+                {
+                    **child_record,
+                    "state": {
+                        "status": "terminal",
+                        "outcome": {"status": "completed", "result": {"entryId": 1}},
+                    },
+                }
+            )
             live = await tx.doc(LiveDoc, conversation_id)
             add_compaction_status(
                 live, {"taskId": child, "reason": "threshold", "blocking": True, "attempt": 1}
@@ -832,7 +861,7 @@ async def test_a_blocking_compaction_resumes_the_generation_that_waits_for_it(
         await scheduler.open(CTX)
         scheduler.resume()
         # 它恢复后会走到 `prepare`，因为没有模型而失败 —— **那也是"继续了"**。
-        settled = await asyncio.wait_for(scheduler.wait_for_task(runtime.task_id, CTX), 5)
+        settled = await asyncio.wait_for(scheduler.wait_for_task(generation, CTX), 5)
         assert settled["state"]["status"] == "terminal"
         # ⚠️ **关键断言**：它**不是停在 `waiting`**，而且**真的执行了 phase**
         # （`fail_no_model` 是 `prepare` 的产物，所以它确实继续跑了）。
