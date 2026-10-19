@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import warnings
+from importlib.metadata import version as dist_version
 
 import pytest
 
@@ -15,9 +16,11 @@ import pytest
 def test_import_and_metadata() -> None:
     import pi_storage_sqlite
 
-    assert pi_storage_sqlite.__version__ == "0.85.1"
-    # 上游对应包已删除，因此不再声称对齐某个上游版本。
-    assert "删除" in pi_storage_sqlite.__upstream_ref__
+    assert pi_storage_sqlite.__version__ == dist_version("pi-py-storage-sqlite")
+    # 上游对应包已删除，因此**没有**上游对齐点。
+    # 断言 ``is None`` 而不是"字符串里含某几个字"——后者会让任何按 ``@`` 解析
+    # 上游引用的工具静默拿到一句中文说明。
+    assert pi_storage_sqlite.__upstream_ref__ is None
 
 
 def test_forwards_new_api_from_pi_durable() -> None:

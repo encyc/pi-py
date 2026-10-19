@@ -6,23 +6,28 @@
 
 ## 同步状态
 
-- **当前对齐版本**：[`v0.85.1`](./UPSTREAM_VERSION)（2026-09-07）
+- **当前对齐版本**：[`v1.3.0`](./UPSTREAM_VERSION)（2026-10-15）
 - **同步策略**：每 2 周集中同步一次；期间若扫描器命中「破坏性变更」则提前处理。
   触发源是上游各包的 `CHANGELOG.md`（不是版本号，也不是 Release Notes）。详见 [`SYNC.md`](./SYNC.md)。
-- **进行中**：追赶上游 1.0 大改版（包重组：`agent` 瘦身、`session-backends`→`durable`、
-  新增 `mcp`/`codemode`/`env`、`server`/`protocol`/`client` 删除）。计划见
-  [`recon/00-catchup-plan.md`](./recon/00-catchup-plan.md)。
+- **版本号约定**：**包版本号 == 镜像的上游版本**（与上游保持一致）。因此所有包
+  **锁步发版**，且升级版本号必须同时升级 [`UPSTREAM_VERSION`](./UPSTREAM_VERSION) ——
+  这条约定由 `tests/test_version_lockstep.py` 在每次提交时校验。
+  ⚠️ 版本号表达的是「本包镜像的是上游哪个版本」，**不是覆盖率**；各包的实际覆盖度
+  见各自的 `PORTING.md` 与下表状态列。
 
 | 包 | 上游对应 | 状态 | 说明 |
 |---|---|---:|---|
-| [`pi-ai`](./packages/pi-ai) | `@earendil-works/pi-ai` | ✅ | 统一 LLM API（OpenAI + Anthropic + retry） |
+| [`pi-ai`](./packages/pi-ai) | `@earendil-works/pi-ai` | ✅ | 统一 LLM API（OpenAI + Anthropic + 模型类型族 + retry/overflow/validation） |
 | [`pi-agent-core`](./packages/pi-agent-core) | `@earendil-works/pi-agent-core` | ✅ | agent 循环引擎 + sessions（技能/会话/压缩） |
+| [`pi-coding-agent`](./packages/pi-coding-agent) | `@earendil-works/pi-coding-agent` | ✅ | 编码 agent SDK + 内置扩展三件套（tool_search / mcp / codemode）；上游 `core/` 仍有欠账 |
+| [`pi-durable`](./packages/pi-durable) | `@earendil-works/pi-durable` | ✅ | 可移植执行环境 + 会话/条目/任务运行时（`harness/` 全覆盖，含 `TaskScheduler`） |
+| [`pi-codemode`](./packages/pi-codemode) | `@earendil-works/pi-codemode` | ✅ | JS 沙箱（wasmtime + 上游同一份 `quickjs.wasm`，prelude 原文装载） |
+| [`pi-mcp`](./packages/pi-mcp) | `@earendil-works/pi-mcp` | ✅ | MCP 客户端（stdio 子进程 + Streamable HTTP/SSE + OAuth 全套） |
+| [`pi-chord`](./packages/pi-chord) | `@earendil-works/chord`（消费侧） | 🔶 | 上下文/JSON diff 面；上游 **host 半边**（8,117 行）在 v1.3.0 无消费者，未移植 |
 | [`pi-storage-sqlite`](./packages/pi-storage-sqlite) | _无_（上游已删） | 🗄️ | **已废弃**：转发壳，请改用 `pi_durable.storage.sqlite` |
-| [`pi-coding-agent`](./packages/pi-coding-agent) | `@earendil-works/pi-coding-agent` | ✅ | 编码 agent SDK（bash/read/edit/write/grep/find/ls） |
-| [`pi-chord`](./packages/pi-chord) | `@earendil-works/chord`（仅 `context` 子路径） | 🚧 | 调用作用域上下文微内核（镜像上游 v1.3.0） |
-| [`pi-durable`](./packages/pi-durable) | `@earendil-works/pi-durable`（env 岛） | 🚧 | 可移植执行环境（fs/shell/watch）+ 上游 env-conformance 可执行规格 |
-| [`pi-codemode`](./packages/pi-codemode) | `@earendil-works/pi-codemode` | 🚧 | JS 沙箱（wasmtime + 上游同一份 `quickjs.wasm`，prelude 原文装载） |
-| [`pi-mcp`](./packages/pi-mcp) | `@earendil-works/pi-mcp` | 🚧 | MCP 客户端（stdio 子进程 + Streamable HTTP/SSE；OAuth 属第二期） |
+
+> 状态含义：✅ 上游该包在本仓有对应实现面；🔶 有意只覆盖一部分（原因见备注与 `PORTING.md`）；
+> 🗄️ 上游已删除、本仓仅保留迁移壳。
 
 ## 安装
 
@@ -39,8 +44,13 @@ pip install pi-py-coding-agent # 编码 agent SDK
 |---|---|
 | [`pi-py-ai`](https://pypi.org/project/pi-py-ai/) | 统一 LLM API（OpenAI + Anthropic + retry） |
 | [`pi-py-agent-core`](https://pypi.org/project/pi-py-agent-core/) | agent 循环引擎 + sessions |
-| [`pi-py-storage-sqlite`](https://pypi.org/project/pi-py-storage-sqlite/) | SQLite 会话存储后端 |
 | [`pi-py-coding-agent`](https://pypi.org/project/pi-py-coding-agent/) | 编码 agent SDK |
+| [`pi-py-durable`](https://pypi.org/project/pi-py-durable/) | 执行环境 + 会话/任务运行时 |
+| [`pi-py-codemode`](https://pypi.org/project/pi-py-codemode/) | JS 沙箱（wasmtime + quickjs.wasm） |
+| [`pi-py-mcp`](https://pypi.org/project/pi-py-mcp/) | MCP 客户端 |
+| [`pi-py-chord`](https://pypi.org/project/pi-py-chord/) | 上下文/JSON diff 基元 |
+| [`pi-py-storage-sqlite`](https://pypi.org/project/pi-py-storage-sqlite/) | **已废弃**：转发到 `pi-py-durable` |
+| `pi-py-server` | **已下线**：上游已于 v1.2.0 删除该包；PyPI 上保留历史版本，不再发新版本 |
 
 发布流程：打 tag **并创建 GitHub Release** 后，[`publish.yml`](./.github/workflows/publish.yml) 自动构建并发布 `packages/` 下全部 workspace 成员到 PyPI。发布记录见 [Releases](https://github.com/encyc/pi-py/releases) 与 [CHANGELOG.md](./CHANGELOG.md)。
 
@@ -172,12 +182,16 @@ uv run mypy             # 类型检查（strict）
 
 ## 路线图
 
-- [x] 5 包基线完成（当前对齐上游 v0.85.1）
+- [x] 5 包基线完成（对齐上游 v0.85.1）
 - [x] OpenAI/DeepSeek provider 真实验证
 - [x] Anthropic provider（纯逻辑测试，待真实 API 验证）
+- [x] **追赶上游 1.0 大改版**（当前对齐上游 **v1.3.0**）：`pi-server` 下线、
+      `pi-storage-sqlite` 并入新建 `pi-durable`、新增 `pi-mcp`/`pi-codemode`、
+      `agent` 瘦身、`coding-agent` Tier-A + 内置扩展三件套
+- [ ] `pi-coding-agent` 的 `core/` 剩余部分（`agent-session`/`settings-manager`/
+      `resource-loader`/`compaction` 等，见其 `PORTING.md` 欠账清单）
 - [ ] Google / Mistral / Bedrock provider
 - [ ] OAuth 鉴权（`auth/*`）
-- [ ] 扩展系统（`extensions/`）
 
 ## 许可证
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+from importlib.metadata import version as dist_version
 
 import pytest
 
@@ -10,7 +11,11 @@ import pytest
 def test_import() -> None:
     import pi_agent_core
 
-    assert pi_agent_core.__version__ == "1.3.0"
+    # 与**包元数据**比对，而不是硬编码字面量。硬编码会在版本升级时漂移，而这条
+    # 断言真正要保证的不变量是「``__version__`` 与 ``pyproject`` 声明一致」——
+    # pyproject 与 __version__ 曾经一个是 0.85.1、一个是 1.3.0，而硬编码的断言
+    # 两边都"通过"，正是这个不变量失守却没被发现的原因。
+    assert pi_agent_core.__version__ == dist_version("pi-py-agent-core")
     assert pi_agent_core.__upstream_ref__ == "earendil-works/pi@v1.3.0"
 
 

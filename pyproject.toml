@@ -109,7 +109,9 @@ plugins = ["pydantic.mypy"]
 [tool.pytest.ini_options]
 minversion = "8.0"
 asyncio_mode = "auto"
-testpaths = ["packages"]
+# "tests" 是**仓库级**测试（如版本锁步守卫）—— 那类不变量不属于任何单个包，
+# 放进某个包的 tests/ 会让它看起来像是那个包的约束。
+testpaths = ["packages", "tests"]
 python_files = ["test_*.py"]
 # monorepo 多包:用 importlib 模式避免同名测试模块(test_smoke)冲突
 # -m "not integration"：默认跳过集成测试（真实 API 调用，需 key + 消耗额度）

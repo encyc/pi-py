@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import importlib
+from importlib.metadata import version as dist_version
 
 
 def test_import() -> None:
     import pi_mcp
 
-    assert pi_mcp.__version__ == "1.3.0"
+    # 与**包元数据**比对而不是硬编码字面量：后者会在版本升级时漂移，而这条断言
+    # 真正要保证的不变量是「``__version__`` 与 ``pyproject`` 声明一致」。
+    assert pi_mcp.__version__ == dist_version("pi-py-mcp")
     assert pi_mcp.__upstream_ref__ == "earendil-works/pi@v1.3.0"
 
 

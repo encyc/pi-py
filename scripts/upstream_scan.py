@@ -93,11 +93,16 @@ def fetch_changelog(pkg: str, cache_dir: Path | None) -> str | None:
     try:
         out = subprocess.run(
             [
-                "gh", "api",
+                "gh",
+                "api",
                 f"repos/{REPO}/contents/packages/{pkg}/CHANGELOG.md",
-                "--jq", ".content",
+                "--jq",
+                ".content",
             ],
-            capture_output=True, text=True, timeout=60, check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=True,
         ).stdout.strip()
         return base64.b64decode(out).decode("utf-8")
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
@@ -128,13 +133,12 @@ def parse_changelog(text: str) -> list[VersionEntry]:
         for name in SECTIONS:
             sm = re.search(
                 rf"^### {re.escape(name)}\s*$(.*?)(?=^### |\Z)",
-                body, flags=re.M | re.S,
+                body,
+                flags=re.M | re.S,
             )
             if sm:
                 items = [
-                    ln[2:].strip()
-                    for ln in sm.group(1).split("\n")
-                    if ln.strip().startswith("- ")
+                    ln[2:].strip() for ln in sm.group(1).split("\n") if ln.strip().startswith("- ")
                 ]
                 if items:
                     entry.sections[name] = items
@@ -170,7 +174,8 @@ def scan(cache_dir: Path | None) -> dict:
             "breaking_items": sum(len(e.breaking) for e in newer),
             "breaking": [
                 {"version": e.version, "date": e.date, "items": e.breaking}
-                for e in newer if e.breaking
+                for e in newer
+                if e.breaking
             ],
         }
     return report
@@ -186,8 +191,7 @@ def print_report(rep: dict) -> None:
         total_breaking += n_b
         flag = "⚠" if n_b else " "
         local = " ".join(info["local_packages"])
-        print(f"{flag} {upkg:<14} ← {local:<38} "
-              f"{n_v:>2} 个版本, {n_b:>2} 条 Breaking")
+        print(f"{flag} {upkg:<14} ← {local:<38} {n_v:>2} 个版本, {n_b:>2} 条 Breaking")
         for grp in info["breaking"]:
             print(f"      [{grp['version']}] {grp['date']}")
             for it in grp["items"]:

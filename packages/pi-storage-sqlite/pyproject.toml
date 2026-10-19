@@ -1,6 +1,6 @@
 [project]
 name = "pi-py-storage-sqlite"
-version = "0.85.1"
+version = "1.3.0"
 description = "【已废弃】转发到 pi-py-durable —— 上游对应包已于 v1.2.0 删除"
 readme = "README.md"
 license = { text = "MIT" }
@@ -9,7 +9,7 @@ authors = [{ name = "Justin Gao" }]
 dependencies = [
     # 转发壳：旧数据模型在新实现里没有对应物，因此本包只重导出 pi-durable 的
     # SQLite 后端（见 PORTING.md 的并入说明）。
-    "pi-py-durable",
+    "pi-py-durable>=1.3.0,<1.4",
 ]
 
 classifiers = [

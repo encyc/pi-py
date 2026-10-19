@@ -12,12 +12,14 @@
 
 from __future__ import annotations
 
-__version__ = "0.85.1"
-#: 声明基线仍是 v0.85.1（与根目录 ``UPSTREAM_VERSION`` 一致）。
-#: 本包已**部分**对齐 v1.3.0（Tier-A：constrainedSampling 默认开启、bash 退出码语义、
-#: structured_content/output_schema、truncate_middle、format_read_line_range）——
-#: 详见 ``PORTING.md``。整体版本号与依赖上界待 Lead 统一决策后再动。
-__upstream_ref__ = "earendil-works/pi@v0.85.1"
+__version__ = "1.3.0"
+#: 声明镜像的上游版本。本包已对齐 v1.3.0 的 Tier-A 与 Tier-B（内置扩展三件套
+#: tool_search / mcp / codemode 均已落地）；上游 ``core/`` 仍有未移植部分，
+#: 详见 ``PORTING.md`` 的欠账清单。
+#:
+#: ⚠️ 本包的**版本号不再表示上游对齐点** —— 那件事由本字段承担，见仓库根
+#: ``README.md`` 的「版本号约定」。
+__upstream_ref__ = "earendil-works/pi@v1.3.0"
 
 # ---- 工具 ----
 # ---- 内置扩展（SDK 面）----

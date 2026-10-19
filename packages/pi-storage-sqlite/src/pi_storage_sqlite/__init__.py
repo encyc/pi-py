@@ -39,8 +39,13 @@ from __future__ import annotations
 
 import warnings
 
-__version__ = "0.85.1"
-__upstream_ref__ = "无 —— 上游 @earendil-works/pi-session-backend-sqlite-node 已于 v1.2.0 删除"
+__version__ = "1.3.0"
+#: 本包**没有**上游对应物：上游 ``@earendil-works/pi-session-backend-sqlite-node``
+#: 已于 v1.2.0 连同 ``session-backends`` 一起删除。
+#:
+#: 用 ``None`` 而不是一句描述性字符串，好让工具能区分「**没有**上游」与
+#: 「上游是 X」——描述性字符串会让任何按 ``@`` 解析上游引用的代码静默失败。
+__upstream_ref__: str | None = None
 
 from pi_durable.storage.sqlite import (  # noqa: E402
     CURRENT_SQLITE_SCHEMA_VERSION,

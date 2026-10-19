@@ -6,15 +6,56 @@
 本项目在 `CHANGELOG.md` 中保留公共的、用户可见的变更记录。
 具体的提交记录参见 [GitHub Releases](https://github.com/earendil-works/pi-py/releases)。
 
-## 未发布（追赶上游 1.3.0）
+## 1.3.0 (2026-10-19)
+
+对齐上游 v1.3.0。这是一次**包结构重组**：上游在 1.0 之后删除了 `server`/`protocol`/`client`，
+把 `session-backends` 换成了 `durable`，并新增了 `mcp`/`codemode`/`env`。
+
+### 新增包
+
+- **`pi-durable`** —— 上游 `@earendil-works/pi-durable` 的移植：
+  可移植执行环境（fs/shell/watch，含上游 `env-conformance` 可执行规格）、
+  会话/条目/存储（内存 + SQLite 两后端，上游 `storage-conformance` 24/24）、
+  以及 `harness/` 全套（文档/任务/调度器，含 63 方法的 `TaskScheduler`
+  与 `ToolTask`/`GenerationTask`/`CompactionTask` 三个任务定义）。
+- **`pi-mcp`** —— 上游 `@earendil-works/pi-mcp`：MCP 客户端（stdio 子进程 +
+  Streamable HTTP/SSE）与 OAuth 全套（含回调服务器的 S1–S12 安全边界）。
+- **`pi-codemode`** —— 上游 `@earendil-works/pi-codemode`：JS 沙箱，用 wasmtime
+  加载与上游**同一份** `quickjs.wasm`（sha256 断言），prelude 原文装载。
+- **`pi-chord`** —— 上游 `@earendil-works/chord` 的**消费侧**（上下文、JSON diff、
+  输出追踪）。上游 host 半边（8,117 行）在本版本无任何消费者，未移植。
 
 ### 移除
 
 - **`pi-server` 下线**：上游 `@earendil-works/pi-server`（`packages/server`）已在
   v1.2.0 被删除（连同 `protocol`/`client`，无替代实现），本包失去对应的上游包，
   停止维护与发布。`pi-py-server` 不再出现在后续版本的 PyPI 发布中；已发布的历史
-  版本（0.83.0 / 0.84.1）仍保留在 PyPI，源码可通过
+  版本（0.83.0 / 0.84.1 / 0.85.1）仍保留在 PyPI，源码可通过
   `git log -- packages/pi-server` 追溯。
+- **`pi-storage-sqlite` 并入 `pi-durable`**：上游对应包已随 `session-backends`
+  一起删除，且旧数据模型在新模型里没有对应物。本包保留为**转发壳**：新 API 从
+  `pi_durable.storage.sqlite` 转发（同一对象），5 个旧名字
+  （`SqliteSessionRepo` 等）明确抛 `AttributeError` 并给出迁移路径 ——
+  「看起来能用但语义不同」的名字比直接删掉更危险。
+
+### 行为对齐（上游 v1.0 → v1.3.0）
+
+- **`pi-agent-core`**：`harness/` 更名为 `sessions/`；新增 `finishTurn`/
+  `prepareRequest` 等 agent turn API。
+- **`pi-ai`**：15 项 MUST-PORT 行为对齐；新增模型类型族
+  （`ImageModel`/`ClassifierModel`/`AnyModel` 等）、`uuidv7`、`utils/overflow`、
+  `utils/validation`、`Models` 类型面。
+- **`pi-coding-agent`**：Tier-A 对齐 + 内置扩展三件套
+  （`tool_search`/`mcp`/`codemode`，三者均可从包入口导入工厂）。
+
+### 版本号统一
+
+- 此前各包版本号不一致：`pi-ai`/`pi-agent-core` 的 `pyproject` 是 `0.85.1`
+  而 `__version__` 是 `1.3.0`；`pi-chord`/`pi-durable` 等是 `1.3.0`；
+  `pi-coding-agent`/`pi-storage-sqlite` 是 `0.85.1`。依赖上界也因此失真。
+- 现统一为 **`1.3.0`**，并恢复约定「**包版本号 == 镜像的上游版本**」。
+  新增 `tests/test_version_lockstep.py` 在**每次提交**校验三件事：
+  所有包版本锁步、`__version__` 与包元数据一致、`__upstream_ref__` 与版本号一致。
 
 ### 发布基建
 
@@ -26,6 +67,10 @@
   （防止 `skip-existing` 掩盖「其实没传上去」）。
 - 补发通道改为显式指定 tag（`workflow_dispatch` 的 `tag` 输入必填并检出该 tag），
   修复此前手动触发会检出 `main` HEAD、构建出与 tag 不符的包的问题。
+- 修复补发**历史** tag 会失败的问题：校验脚本与被校验内容改为分别检出
+  （脚本取默认分支、内容取 tag）—— 历史 tag 上通常没有 `.github/scripts/`。
+- **补发 v0.85.1**：该版本此前只推了 tag、没建 Release，因此从未发到 PyPI
+  （PyPI 上一度停在 0.84.1）。本次已补发并创建对应 Release。
 
 ## 0.85.1 (2026-09-07)
 
