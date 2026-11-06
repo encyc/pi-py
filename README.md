@@ -1,5 +1,22 @@
 # pi-py
 
+> ## ⚠️ 本项目已归档（Archived），不再维护
+>
+> **1. 为什么归档**：Pi 进入新大版本后，跟随上游的成本（每两周集中同步一次、
+> 命中破坏性变更还要提前处理、所有包锁步发版）已经超出我能持续投入的精力。
+> 因此本仓库归档，不再跟进上游、不再发新版本。已有代码与 PyPI 上的历史版本继续可用。
+>
+> **2. 接下来去哪**：我依然认同 Pi 的「简单内核」哲学——内核小到能读完，
+> 每一层都能单独替换。沿着这个方向我写了
+> **[ZenAgent](https://github.com/encyc/zen-agent)**（PyPI `zenagent-py`）：
+> 纯 Python，只有一个运行时依赖（`httpx`），五层内核的依赖严格向下，
+> 一个请求会经过什么可以在一晚上读完；同一套内核提供
+> **TUI / GUI / headless / REPL 四种使用方式**，
+> 既能当 CLI 用，也能用 `Agent(...)` + 一个 subscribe 回调嵌进你自己的程序，
+> 还可以用 `zen rpc` 从别的语言驱动。
+> 这个项目我会密集更新——**对 pi-py 有需求的朋友，欢迎移步
+> <https://github.com/encyc/zen-agent>**。
+
 > [Pi](https://pi.dev) 的 Python SDK 复刻 —— AI agent 工具集：统一 LLM API、agent 运行时、编码 agent 工具集。
 
 [Pi](https://github.com/earendil-works/pi)（原名 `badlogic/pi-mono`，作者 Mario Zechner 于 2026 年加入 [Earendil Works](https://github.com/earendil-works) 后项目迁至现址）是一套 TypeScript 的 AI agent 工具集。本仓库将其核心能力移植到 Python，**以 SDK 库形式提供，不含 CLI/TUI**。
